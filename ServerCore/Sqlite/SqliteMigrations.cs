@@ -1,5 +1,8 @@
 using System;
+using System.Collections.Generic;
 using DfoGmTool.ServerCore.Game.Currency;
+using DfoGmTool.ServerCore.Game.Inventory;
+using DfoGmTool.ServerCore.Game.TitleBook;
 using Microsoft.Data.Sqlite;
 
 namespace DfoGmTool.ServerCore.Sqlite
@@ -501,7 +504,206 @@ ALTER TABLE account_settings_new RENAME TO account_settings;");
             // 全部角色下次选角时由统一建构器按 (job, growType, 觉醒, 等级) 重建技能面板,
             // 学习进度清零、SP/TP 随派生回满, 杜绝任何旧口径残留。
             (23, "技能点数派生化, 退役镜像表, 技能面板清零重建", MigrateSkillPointDerivation),
+
+            // 24: characters 角色槽位互换支持——新增 slot_index 列并用 character_id 顺序填充初始值
+            (24, "characters slot_index 列", conn =>
+            {
+                SqliteSchemaMigrator.EnsureColumns(conn, "characters", new[]
+                {
+                    ("slot_index", "INTEGER NOT NULL DEFAULT 0"),
+                });
+                // 对已有数据按 account_id 分组、character_id 升序分配 slot_index(0,1,2...)
+                // 仅更新未删除角色，避免给已删除行写入重叠值
+                using (var cmd = conn.CreateCommand())
+                {
+                    cmd.CommandText = @"
+UPDATE characters SET slot_index = (
+    SELECT cnt FROM (
+        SELECT c1.character_id,
+               (SELECT COUNT(*) FROM characters c2
+                WHERE c2.account_id = c1.account_id
+                  AND c2.delete_flag = 0
+                  AND c2.character_id <= c1.character_id) - 1 AS cnt
+        FROM characters c1
+        WHERE c1.character_id = characters.character_id
+    )
+) WHERE delete_flag = 0;";
+                    cmd.ExecuteNonQuery();
+                }
+            }),
+
+            // 存量角色的 0/1 原样保留（视为已购买）；仅改变今后省略该列时的默认状态。
+            (25, "skill_tree_index 未购买状态与默认值", MigrateSkillTreeIndexDefault),
+
+            (26, "守护者盾牌5槽", MigrateKnightShieldDeck),
+
+            (27, "角色金币携带/拍卖额双上限", conn => ExecuteBatch(conn, @"
+CREATE TABLE IF NOT EXISTS character_gold_limits (
+    character_id       INTEGER PRIMARY KEY,
+    gold_carry_limit   INTEGER NOT NULL,
+    auction_gold_limit INTEGER NOT NULL,
+    updated_at         TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (character_id) REFERENCES characters(character_id) ON DELETE CASCADE
+);")),
+
+            // 旧 CHANGE_EMOTION 曾把 1..9 的心情值同时镜像到两个外观字段。
+            // v28 只执行一次；此后业务对 emotion_index/action_byte 的合法修改不会再被清理。
+            (28, "清理心情处理器写入的外观字段污染", conn => ExecuteBatch(conn, @"
+UPDATE character_subtype0_fields
+SET emotion_index = 0,
+    action_byte = 0
+WHERE emotion_index BETWEEN 1 AND 9
+  AND action_byte = emotion_index;")),
+
+            (29, "character_new_items/character_avatar_detail ItemCore 迁移", InventoryNewItemMigrationService.Migrate),
+            (30, "account_cargo_new_items ItemCore 迁移", InventoryNewItemMigrationService.MigrateAccountCargo),
+            (31, "character_avatar_detail 时装 UID 独立", MigrateAvatarDetailIndependentUid),
+            (32, "ItemCore charm 归并为 equipment", NormalizeLegacyCharmItemKind),
+            (33, "character_avatar_uid_sequence", EnsureAvatarUidSequence),
+            (34, "character_creature_uid_sequence", EnsureCreatureUidSequence),
+            (35, "character_new_titlebook ItemCore 迁移", CharacterTitleBookRepository.MigrateLegacyToNewTable),
+            (36, "character_new_items 主背包虚拟槽0-2迁移", InventoryNewItemMigrationService.MigrateMainVirtualCurrencySlots),
+            (37, "inventory_audit_log_v2 新背包审计日志", EnsureInventoryAuditLogV2),
+            (38, "character_name_tag_state", NameTagStateRepository.EnsureTableAndMigrateLegacy),
+            (39, "character_tower_of_despair_progress", conn => ExecuteBatch(conn, @"
+CREATE TABLE IF NOT EXISTS character_tower_of_despair_progress (
+    character_id INTEGER PRIMARY KEY,
+    highest_cleared_floor INTEGER NOT NULL DEFAULT 0
+        CHECK (highest_cleared_floor >= 0 AND highest_cleared_floor <= 100),
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (character_id) REFERENCES characters(character_id) ON DELETE CASCADE
+);")),
         };
+
+        private static void MigrateKnightShieldDeck(SqliteConnection connection)
+        {
+            ExecuteBatch(connection, @"
+CREATE TABLE IF NOT EXISTS character_knight_shield_deck (
+    character_id INTEGER NOT NULL,
+    slot_index INTEGER NOT NULL CHECK (slot_index >= 0 AND slot_index <= 4),
+    shield_item_id INTEGER NOT NULL CHECK (shield_item_id > 0),
+    PRIMARY KEY (character_id, slot_index),
+    FOREIGN KEY (character_id) REFERENCES characters(character_id) ON DELETE CASCADE
+);");
+        }
+
+        private static void EnsureInventoryAuditLogV2(SqliteConnection connection)
+        {
+            ExecuteBatch(connection, @"
+CREATE TABLE IF NOT EXISTS inventory_audit_log_v2 (
+    audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    session_id TEXT,
+    owner_scope TEXT NOT NULL DEFAULT 'character' CHECK(owner_scope IN ('character', 'account')),
+    owner_id INTEGER NOT NULL DEFAULT 0,
+    character_id INTEGER NOT NULL DEFAULT 0,
+    account_id INTEGER NOT NULL DEFAULT 0,
+    action_name TEXT NOT NULL,
+    list_type INTEGER,
+    slot_index INTEGER,
+    item_id INTEGER NOT NULL DEFAULT 0,
+    item_kind INTEGER NOT NULL DEFAULT 0,
+    value_before INTEGER NOT NULL DEFAULT 0,
+    value_after INTEGER NOT NULL DEFAULT 0,
+    count_before INTEGER NOT NULL DEFAULT 0,
+    count_after INTEGER NOT NULL DEFAULT 0,
+    count_delta INTEGER NOT NULL DEFAULT 0,
+    before_core_hash TEXT,
+    after_core_hash TEXT,
+    payload_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_inventory_audit_v2_char_time
+    ON inventory_audit_log_v2(character_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_inventory_audit_v2_account_time
+    ON inventory_audit_log_v2(account_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_inventory_audit_v2_action_time
+    ON inventory_audit_log_v2(action_name, created_at);");
+        }
+
+        private static void MigrateSkillTreeIndexDefault(SqliteConnection connection)
+        {
+            bool foreignKeysEnabled;
+            using (var command = new SqliteCommand("PRAGMA foreign_keys;", connection))
+                foreignKeysEnabled = Convert.ToInt32(command.ExecuteScalar()) != 0;
+            if (foreignKeysEnabled)
+                ExecuteBatch(connection, "PRAGMA foreign_keys=OFF;");
+
+            try
+            {
+                using (var transaction = connection.BeginTransaction())
+                {
+                    ExecuteBatch(connection, transaction, @"
+ALTER TABLE character_subtype1_fields RENAME TO character_subtype1_fields_v24;
+CREATE TABLE character_subtype1_fields (
+    character_id INTEGER PRIMARY KEY,
+    stat_hp_max INTEGER NOT NULL DEFAULT 0,
+    stat_mp_max INTEGER NOT NULL DEFAULT 0,
+    stat_physical_attack INTEGER NOT NULL DEFAULT 0,
+    stat_physical_defense INTEGER NOT NULL DEFAULT 0,
+    stat_magical_attack INTEGER NOT NULL DEFAULT 0,
+    stat_magical_defense INTEGER NOT NULL DEFAULT 0,
+    stat_fire_resistance INTEGER NOT NULL DEFAULT 0,
+    stat_water_resistance INTEGER NOT NULL DEFAULT 0,
+    stat_dark_resistance INTEGER NOT NULL DEFAULT 0,
+    stat_light_resistance INTEGER NOT NULL DEFAULT 0,
+    stat_inventory_limit INTEGER NOT NULL DEFAULT 0,
+    stat_hp_regen_speed INTEGER NOT NULL DEFAULT 0,
+    stat_mp_regen_speed INTEGER NOT NULL DEFAULT 0,
+    stat_move_speed INTEGER NOT NULL DEFAULT 0,
+    stat_attack_speed INTEGER NOT NULL DEFAULT 0,
+    stat_cast_speed INTEGER NOT NULL DEFAULT 0,
+    stat_hit_recovery INTEGER NOT NULL DEFAULT 0,
+    stat_jump_power INTEGER NOT NULL DEFAULT 0,
+    stat_weight INTEGER NOT NULL DEFAULT 0,
+    stat_level INTEGER NOT NULL DEFAULT 0,
+    name_tag_item_id INTEGER NOT NULL DEFAULT 0,
+    name_tag_expire_time INTEGER NOT NULL DEFAULT 0,
+    skill_tree_index INTEGER NOT NULL DEFAULT -1,
+    equipped_creature_level INTEGER NOT NULL DEFAULT 0,
+    equip_list_trailing INTEGER NOT NULL DEFAULT 0,
+    manage_level INTEGER NOT NULL DEFAULT 0,
+    flag_byte INTEGER NOT NULL DEFAULT 0,
+    guild_power_war INTEGER NOT NULL DEFAULT 0,
+    server_timestamp INTEGER NOT NULL DEFAULT 0,
+    quest_shop_count INTEGER NOT NULL DEFAULT 0,
+    progress1 INTEGER NOT NULL DEFAULT 0,
+    progress2 INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (character_id) REFERENCES characters(character_id) ON DELETE CASCADE
+);
+INSERT INTO character_subtype1_fields (
+    character_id, stat_hp_max, stat_mp_max, stat_physical_attack, stat_physical_defense,
+    stat_magical_attack, stat_magical_defense, stat_fire_resistance, stat_water_resistance,
+    stat_dark_resistance, stat_light_resistance, stat_inventory_limit,
+    stat_hp_regen_speed, stat_mp_regen_speed, stat_move_speed, stat_attack_speed,
+    stat_cast_speed, stat_hit_recovery, stat_jump_power, stat_weight, stat_level,
+    name_tag_item_id, name_tag_expire_time, skill_tree_index, equipped_creature_level,
+    equip_list_trailing, manage_level, flag_byte, guild_power_war, server_timestamp,
+    quest_shop_count, progress1, progress2
+)
+SELECT
+    character_id, stat_hp_max, stat_mp_max, stat_physical_attack, stat_physical_defense,
+    stat_magical_attack, stat_magical_defense, stat_fire_resistance, stat_water_resistance,
+    stat_dark_resistance, stat_light_resistance, stat_inventory_limit,
+    stat_hp_regen_speed, stat_mp_regen_speed, stat_move_speed, stat_attack_speed,
+    stat_cast_speed, stat_hit_recovery, stat_jump_power, stat_weight, stat_level,
+    name_tag_item_id, name_tag_expire_time,
+    CASE WHEN skill_tree_index IN (0, 1) THEN skill_tree_index ELSE -1 END,
+    equipped_creature_level, equip_list_trailing, manage_level, flag_byte, guild_power_war,
+    server_timestamp, quest_shop_count, progress1, progress2
+FROM character_subtype1_fields_v24;
+DROP TABLE character_subtype1_fields_v24;");
+                    transaction.Commit();
+                }
+            }
+            finally
+            {
+                if (foreignKeysEnabled)
+                    ExecuteBatch(connection, "PRAGMA foreign_keys=ON;");
+            }
+        }
 
         private static void MigrateSkillPointDerivation(SqliteConnection connection)
         {
@@ -576,6 +778,146 @@ CREATE TABLE character_skills (
             return false;
         }
 
+        private static void MigrateAvatarDetailIndependentUid(SqliteConnection connection)
+        {
+            const string tableName = "character_avatar_detail";
+            if (!TableExists(connection, tableName))
+            {
+                ExecuteBatch(connection, @"
+CREATE TABLE IF NOT EXISTS character_avatar_detail (
+    item_uid INTEGER PRIMARY KEY,
+    owner_id INTEGER NOT NULL DEFAULT 0,
+    character_id INTEGER NOT NULL DEFAULT 0,
+    item_id INTEGER NOT NULL DEFAULT 0,
+    expire_date INTEGER NOT NULL DEFAULT 0,
+    clear_avatar_id INTEGER NOT NULL DEFAULT 0,
+    jewel_socket BLOB NOT NULL CHECK(length(jewel_socket) = 30),
+    color1 INTEGER NOT NULL DEFAULT 0,
+    color2 INTEGER NOT NULL DEFAULT 0,
+    delete_date INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_character_avatar_detail_character
+    ON character_avatar_detail(character_id);");
+                return;
+            }
+
+            if (!TableSqlContains(connection, tableName, "REFERENCES character_new_items"))
+                return;
+
+            bool foreignKeysEnabled;
+            using (var command = new SqliteCommand("PRAGMA foreign_keys;", connection))
+                foreignKeysEnabled = Convert.ToInt32(command.ExecuteScalar()) != 0;
+            if (foreignKeysEnabled)
+                ExecuteBatch(connection, "PRAGMA foreign_keys=OFF;");
+
+            try
+            {
+                using (var transaction = connection.BeginTransaction())
+                {
+                    ExecuteBatch(connection, transaction, @"
+CREATE TABLE IF NOT EXISTS character_avatar_detail_v31 (
+    item_uid INTEGER PRIMARY KEY,
+    owner_id INTEGER NOT NULL DEFAULT 0,
+    character_id INTEGER NOT NULL DEFAULT 0,
+    item_id INTEGER NOT NULL DEFAULT 0,
+    expire_date INTEGER NOT NULL DEFAULT 0,
+    clear_avatar_id INTEGER NOT NULL DEFAULT 0,
+    jewel_socket BLOB NOT NULL CHECK(length(jewel_socket) = 30),
+    color1 INTEGER NOT NULL DEFAULT 0,
+    color2 INTEGER NOT NULL DEFAULT 0,
+    delete_date INTEGER NOT NULL DEFAULT 0
+);
+INSERT OR REPLACE INTO character_avatar_detail_v31 (
+    item_uid, owner_id, character_id, item_id, expire_date, clear_avatar_id,
+    jewel_socket, color1, color2, delete_date
+)
+SELECT item_uid, owner_id, character_id, item_id, expire_date, clear_avatar_id,
+       jewel_socket, color1, color2, delete_date
+FROM character_avatar_detail;
+DROP TABLE character_avatar_detail;
+ALTER TABLE character_avatar_detail_v31 RENAME TO character_avatar_detail;
+CREATE INDEX IF NOT EXISTS idx_character_avatar_detail_character
+    ON character_avatar_detail(character_id);");
+                    transaction.Commit();
+                }
+            }
+            finally
+            {
+                if (foreignKeysEnabled)
+                    ExecuteBatch(connection, "PRAGMA foreign_keys=ON;");
+            }
+        }
+
+        private static void NormalizeLegacyCharmItemKind(SqliteConnection connection)
+        {
+            using (var transaction = connection.BeginTransaction())
+            {
+                NormalizeLegacyCharmItemKind(connection, transaction, "character_new_items");
+                NormalizeLegacyCharmItemKind(connection, transaction, "account_cargo_new_items");
+                transaction.Commit();
+            }
+        }
+
+        private static void NormalizeLegacyCharmItemKind(
+            SqliteConnection connection,
+            SqliteTransaction transaction,
+            string tableName)
+        {
+            const byte legacyCharmKind = 12;
+            if (!TableExists(connection, tableName))
+                return;
+
+            var updates = new List<Tuple<long, byte[]>>();
+            using (var command = connection.CreateCommand())
+            {
+                command.Transaction = transaction;
+                command.CommandText = $"SELECT item_uid, item_core FROM {tableName};";
+                using (var reader = command.ExecuteReader())
+                {
+                    while (reader.Read())
+                    {
+                        var data = reader.IsDBNull(1) ? null : (byte[])reader[1];
+                        if (data == null || data.Length < ItemCore.Size || data[ItemCore.ItemKindOffset] != legacyCharmKind)
+                            continue;
+
+                        var core = ItemCore.FromBytes(data);
+                        core.ItemKind = ItemCore.KindEquipment;
+                        updates.Add(Tuple.Create(reader.GetInt64(0), core.ToBytes()));
+                    }
+                }
+            }
+
+            foreach (var update in updates)
+            {
+                using (var command = connection.CreateCommand())
+                {
+                    command.Transaction = transaction;
+                    command.CommandText = $"UPDATE {tableName} SET item_core = @itemCore, updated_at = CURRENT_TIMESTAMP WHERE item_uid = @itemUid;";
+                    command.Parameters.AddWithValue("@itemUid", update.Item1);
+                    command.Parameters.AddWithValue("@itemCore", update.Item2);
+                    command.ExecuteNonQuery();
+                }
+            }
+        }
+
+        private static void EnsureAvatarUidSequence(SqliteConnection connection)
+        {
+            using (var transaction = connection.BeginTransaction())
+            {
+                AvatarDetailRepository.EnsureAvatarUidSequence(connection, transaction);
+                transaction.Commit();
+            }
+        }
+
+        private static void EnsureCreatureUidSequence(SqliteConnection connection)
+        {
+            using (var transaction = connection.BeginTransaction())
+            {
+                CreatureDetailRepository.EnsureCreatureUidSequence(connection, transaction);
+                transaction.Commit();
+            }
+        }
+
         private static bool IsPrimaryKeyColumn(SqliteConnection connection, string tableName, string columnName)
         {
             using (var cmd = connection.CreateCommand())
@@ -608,6 +950,19 @@ CREATE TABLE character_skills (
         {
             using (var cmd = connection.CreateCommand())
             {
+                cmd.CommandText = sql;
+                cmd.ExecuteNonQuery();
+            }
+        }
+
+        private static void ExecuteBatch(
+            SqliteConnection connection,
+            SqliteTransaction transaction,
+            string sql)
+        {
+            using (var cmd = connection.CreateCommand())
+            {
+                cmd.Transaction = transaction;
                 cmd.CommandText = sql;
                 cmd.ExecuteNonQuery();
             }

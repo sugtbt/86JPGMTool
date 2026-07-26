@@ -67,13 +67,16 @@ namespace GmPvfLib
         public int RepairPrice { get; set; } = -1;
         public int AddRepairPrice { get; set; } = -1;
         public int Value { get; set; } = -1;
-        public int AddPrice { get; set; } = -1;
+        // [add price] is a signed purchase-price adjustment.  Zero means the
+        // tag is absent; -1 is a valid adjustment and must not mean "missing".
+        public int AddPrice { get; set; }
         public int AddValue { get; set; } = -1;
         public int CreationRate { get; set; } = -1;
         public int Durability { get; set; } = -1;
         public int Weight { get; set; } = -1;
         public int CoolTime { get; set; } = -1;
         public int InventoryLimit { get; set; } = -1;
+        public string NeedMaterial { get; set; }
 
         #endregion
 
@@ -92,6 +95,7 @@ namespace GmPvfLib
         public int PartSetIndex { get; set; } = -1;
         public int OutputIndex { get; set; } = -1;
         public int[] ForceResultItemRule { get; set; }
+        public int ClearAvatar { get; set; }
         
         public string UsableJob { get; set; }
         public string ImpossibleContents { get; set; }
@@ -170,6 +174,7 @@ namespace GmPvfLib
                     case "weight": equ.Weight = ParseInt(data); break;
                     case "cool time": equ.CoolTime = ParseInt(data); break;
                     case "inventory limit": equ.InventoryLimit = ParseInt(data); break;
+                    case "need material": equ.NeedMaterial = data; break;
 
                     
                     case "icon": equ.Icon = data; break;
@@ -181,6 +186,7 @@ namespace GmPvfLib
                     case "part set index": equ.PartSetIndex = ParseInt(data); break;
                     case "output index": equ.OutputIndex = ParseInt(data); break;
                     case "force result item rule": equ.ForceResultItemRule = ParseIntArray(data); break;
+                    case "clear avatar": equ.ClearAvatar = ParseInt(data); break;
                     case "usable job": equ.UsableJob = StripBacktick(data); break;
                     case "impossible contents":
                         equ.ImpossibleContents = data;

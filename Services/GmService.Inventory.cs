@@ -1,12 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using DfoGmTool.ServerCore.Game.TitleBook;
-using DfoGmTool.ServerCore.Game.Characters;
 using DfoGmTool.ServerCore.Game.Currency;
-using DfoGmTool.ServerCore.Game.Dungeon;
 using DfoGmTool.ServerCore.Game.Inventory;
-using DfoGmTool.ServerCore.Game.Quests;
 using DfoGmTool.ServerCore.Game.ReviveCoin;
 using Microsoft.Data.Sqlite;
 
@@ -14,120 +10,143 @@ namespace DfoGmTool.Services
 {
     public sealed partial class GmService
     {
-        // 读侧同样走服务端快照(覆盖全部容器和多态字段语义), 不裸读 character_items
+        // 读侧走服务端在线背包模型(InventoryService.LoadFromDb, 离线/诊断允许),
+        // 覆盖全部容器和 82B ItemCore 语义, 不再裸读 character_items / 旧 DTO。
         public object ListItems(int characterId, PvfIndexService pvfIndex)
         {
             int accountId;
             if (!TryGetAccountId(characterId, out accountId))
                 return Error("角色不存在: " + characterId);
 
-            // 快照加载内部自己开连接, 不能包在 scope 事务里(同库两连接会锁死)
-            var snapshot = _store.LoadCharacterItemListSnapshot(characterId, accountId);
-            var rentalExpireTimes = _supplementalItemExpiration.LoadRentalExpireTimes(characterId);
-
-            var items = new List<object>();
-            AppendCommonItems(items, "主背包", InventoryListType.Main, snapshot.MainItems, pvfIndex, rentalExpireTimes);
-            AppendCommonItems(items, "个人仓库", InventoryListType.PersonalCargo, snapshot.PersonalCargoItems, pvfIndex, rentalExpireTimes);
-            AppendCommonItems(items, "账号金库", InventoryListType.AccountCargo, snapshot.AccountCargoItems, pvfIndex, rentalExpireTimes);
-
-            foreach (var item in snapshot.EquipmentItems)
+            using (var conn = new SqliteConnection(_config.ConnectionString))
             {
-                items.Add(new
-                {
-                    container = "主背包",
-                    category = "穿戴装备",
-                    listType = (int)InventoryListType.Equipment,
-                    slot = (int)item.SlotIndex,
-                    templateId = item.AvatarItemId,
-                    name = pvfIndex.ResolveItemName(item.AvatarItemId),
-                    kind = "equipment",
-                    rarity = pvfIndex.ResolveItemRarity(item.AvatarItemId),
-                    count = 1,
-                    durability = 0,
-                    expireTime = item.ExpireTime,
-                    supplementalExpiration = CreateSupplementalExpiration(rentalExpireTimes, item.AvatarItemId, item.ExpireTime),
-                    templateExpiration = CreateTemplateExpiration(pvfIndex, item.AvatarItemId),
-                    deletable = true,
-                });
-            }
+                conn.Open();
+                var inventory = GmInventoryStore.Load(conn, characterId, accountId);
+                if (inventory == null)
+                    return Error("背包加载失败: " + characterId);
 
-            foreach (var item in snapshot.AvatarItems)
-            {
-                items.Add(new
-                {
-                    container = "主背包",
-                    category = "时装",
-                    listType = (int)InventoryListType.Avatar,
-                    slot = (int)item.SlotIndex,
-                    templateId = item.AvatarItemId,
-                    name = pvfIndex.ResolveItemName(item.AvatarItemId),
-                    kind = "avatar",
-                    rarity = pvfIndex.ResolveItemRarity(item.AvatarItemId),
-                    count = 1,
-                    durability = 0,
-                    expireTime = item.ExpireTime,
-                    supplementalExpiration = CreateSupplementalExpiration(rentalExpireTimes, item.AvatarItemId, item.ExpireTime),
-                    templateExpiration = CreateTemplateExpiration(pvfIndex, item.AvatarItemId),
-                    deletable = true,
-                });
-            }
+                var rentalExpireTimes = _supplementalItemExpiration.LoadRentalExpireTimes(characterId);
+                var items = new List<object>();
 
-            foreach (var item in snapshot.PetItems)
-            {
-                items.Add(new
+                // 主背包虚拟槽(金币/复活币/胜点)单独列出, 不可删除
+                foreach (var virtualItem in inventory.GetMainVirtualCounts())
                 {
-                    container = "宠物",
-                    category = ResolvePetSegment(item.SlotIndex),
-                    listType = (int)InventoryListType.Pet,
-                    slot = (int)item.SlotIndex,
-                    templateId = item.CreatureItemId,
-                    name = pvfIndex.ResolveItemName(item.CreatureItemId),
-                    kind = "pet",
-                    rarity = pvfIndex.ResolveItemRarity(item.CreatureItemId),
-                    count = 1,
-                    durability = 0,
-                    serial = item.CreatureSerialOrHandle,
-                    expireTime = item.ExpireTime,
-                    supplementalExpiration = CreateSupplementalExpiration(rentalExpireTimes, item.CreatureItemId, item.ExpireTime),
-                    templateExpiration = CreateTemplateExpiration(pvfIndex, item.CreatureItemId),
-                    deletable = true,
-                });
-            }
+                    if (virtualItem.SlotIndex > 2)
+                        continue;
 
-            return new { characterId, count = items.Count, items };
+                    items.Add(new
+                    {
+                        container = "主背包",
+                        category = "货币",
+                        listType = (int)InventoryListType.Main,
+                        slot = (int)virtualItem.SlotIndex,
+                        templateId = virtualItem.ItemId,
+                        name = pvfIndex.ResolveItemName(virtualItem.ItemId),
+                        kind = "special",
+                        rarity = 0,
+                        count = virtualItem.Count,
+                        instanceValue = virtualItem.Count,
+                        durability = 0,
+                        expireTime = 0,
+                        supplementalExpiration = (object)null,
+                        templateExpiration = CreateTemplateExpiration(pvfIndex, virtualItem.ItemId),
+                        seal = 0,
+                        deletable = false,
+                    });
+                }
+
+                AppendCoreItems(items, "主背包", InventoryListType.Main, inventory, pvfIndex, rentalExpireTimes);
+                AppendCoreItems(items, "个人仓库", InventoryListType.PersonalCargo, inventory, pvfIndex, rentalExpireTimes);
+                AppendCoreItems(items, "账号金库", InventoryListType.AccountCargo, inventory, pvfIndex, rentalExpireTimes);
+                AppendCoreItems(items, "穿戴栏", InventoryListType.Equipment, inventory, pvfIndex, rentalExpireTimes);
+                AppendCoreItems(items, "时装", InventoryListType.Avatar, inventory, pvfIndex, rentalExpireTimes);
+                AppendCoreItems(items, "宠物", InventoryListType.Pet, inventory, pvfIndex, rentalExpireTimes);
+
+                // 晶块是账号级货币(accounts.cube_*), 不在物品主表, 仅展示, 在账号面板调整
+                foreach (var cube in CurrencyService.LoadCubeFragments(conn, null, accountId))
+                {
+                    items.Add(new
+                    {
+                        container = "主背包",
+                        category = "账号晶块",
+                        listType = (int)InventoryListType.Main,
+                        slot = cube.Slot,
+                        templateId = cube.ItemId,
+                        name = pvfIndex.ResolveItemName(cube.ItemId),
+                        kind = "special",
+                        rarity = pvfIndex.ResolveItemRarity(cube.ItemId),
+                        count = cube.Count,
+                        instanceValue = cube.Count,
+                        durability = 0,
+                        expireTime = 0,
+                        supplementalExpiration = (object)null,
+                        templateExpiration = CreateTemplateExpiration(pvfIndex, cube.ItemId),
+                        seal = 0,
+                        deletable = false,
+                    });
+                }
+
+                return new { characterId, count = items.Count, items };
+            }
         }
 
-        private static void AppendCommonItems(List<object> items, string container, InventoryListType listType,
-            List<CommonInventoryItem> source, PvfIndexService pvfIndex, IReadOnlyDictionary<int, int> rentalExpireTimes)
+        private static void AppendCoreItems(
+            List<object> items,
+            string container,
+            InventoryListType listType,
+            InventoryService inventory,
+            PvfIndexService pvfIndex,
+            IReadOnlyDictionary<int, int> rentalExpireTimes)
         {
-            var isMainList = listType == InventoryListType.Main;
-            foreach (var item in source)
+            foreach (var pair in inventory.GetItems(listType))
             {
-                var kind = pvfIndex.ResolveItemKind(item.ItemTemplateId);
+                var slot = pair.Key;
+                var core = pair.Value;
+                if (core == null || core.IsEmpty)
+                    continue;
+
+                // 主背包 0-2 虚拟槽由虚拟槽通道单独展示
+                if (listType == InventoryListType.Main && slot <= 2)
+                    continue;
+
+                var kind = pvfIndex.ResolveItemKind(core.ItemId);
+                var expireTime = core.ExpireTime;
+                if (listType == InventoryListType.Avatar
+                    && inventory.AvatarDetails.TryGetDetail(core.Uid, out var avatarDetail)
+                    && avatarDetail != null)
+                {
+                    expireTime = avatarDetail.ExpireDate;
+                }
+                else if (listType == InventoryListType.Pet
+                    && inventory.CreatureDetails.TryGetDetail(core.Uid, out var creatureDetail)
+                    && creatureDetail != null
+                    && creatureDetail.ExpireDate > 0)
+                {
+                    expireTime = creatureDetail.ExpireDate;
+                }
+
                 items.Add(new
                 {
                     container,
-                    category = isMainList ? ResolveMainSegment(item.SlotIndex) : container,
+                    category = listType == InventoryListType.Main ? ResolveMainSegment(slot) : container,
                     listType = (int)listType,
-                    slot = (int)item.SlotIndex,
-                    templateId = item.ItemTemplateId,
-                    name = pvfIndex.ResolveItemName(item.ItemTemplateId),
+                    slot = (int)slot,
+                    templateId = core.ItemId,
+                    name = pvfIndex.ResolveItemName(core.ItemId),
                     kind,
-                    rarity = pvfIndex.ResolveItemRarity(item.ItemTemplateId),
-                    // CountOrInstanceValue 对装备是实例值(品质种子), 对堆叠物是数量
-                    count = kind == "equipment" ? 1 : item.CountOrInstanceValue,
-                    instanceValue = item.CountOrInstanceValue,
-                    durability = (int)item.Durability,
-                    expireTime = item.ExpireTime,
-                    supplementalExpiration = CreateSupplementalExpiration(rentalExpireTimes, item.ItemTemplateId, item.ExpireTime),
-                    templateExpiration = CreateTemplateExpiration(pvfIndex, item.ItemTemplateId),
-                    seal = (int)item.SealFlag,
-                    deletable = IsDeletable(listType, item.SlotIndex),
+                    rarity = pvfIndex.ResolveItemRarity(core.ItemId),
+                    count = kind == "equipment" ? 1 : core.Count,
+                    instanceValue = core.InstanceValue,
+                    durability = (int)core.Durability,
+                    expireTime,
+                    supplementalExpiration = CreateSupplementalExpiration(rentalExpireTimes, core.ItemId, expireTime),
+                    templateExpiration = CreateTemplateExpiration(pvfIndex, core.ItemId),
+                    seal = (int)core.SealFlag,
+                    deletable = IsDeletable(listType, slot),
                 });
             }
         }
 
-        // 货币行(主背包 slot 0-2)删行会打坏钱包; 晶块(354-359)和账号金库是账号共享, 在账号面板管理
         private static object CreateTemplateExpiration(PvfIndexService pvfIndex, int itemTemplateId)
         {
             var expiration = pvfIndex.ResolveItemExpiration(itemTemplateId);
@@ -161,6 +180,7 @@ namespace DfoGmTool.Services
             return null;
         }
 
+        // 货币行(主背包 slot 0-2)删行会打坏钱包; 晶块(354-359)和账号金库是账号共享, 在账号面板管理
         private static bool IsDeletable(InventoryListType listType, int slot)
         {
             if (listType == InventoryListType.AccountCargo)
@@ -172,8 +192,8 @@ namespace DfoGmTool.Services
             return true;
         }
 
-        // 走服务端 DELETE_ITEM 同款入口(TryDeleteItem): 按列表+槽位精确删除,
-        // 排列锁清理/魔方碎片/整删部分删的语义都由服务端代码处理
+        // 走服务端 DELETE_ITEM 同款入口(InventoryDeleteService.TryDeleteForClient):
+        // 排列锁清理/整删部分删的语义都由服务端代码处理
         public object DeleteItemAt(int characterId, int listType, int slot, int count)
         {
             int accountId;
@@ -184,18 +204,30 @@ namespace DfoGmTool.Services
             if (!IsDeletable(list, slot))
                 return Error("该槽位不允许删除(货币行或账号金库)");
 
-            InventoryMutationResult result;
-            if (!_store.TryDeleteItem(characterId, accountId, list, (short)slot, (short)count, out result))
-                return Error("删除失败(槽位为空或该列表不支持删除)");
-
-            return new
+            using (var conn = new SqliteConnection(_config.ConnectionString))
             {
-                success = true,
-                characterId,
-                listType,
-                slot,
-                remaining = result != null ? result.RemainingStackCount : 0,
-            };
+                conn.Open();
+                var inventory = GmInventoryStore.Load(conn, characterId, accountId);
+                if (inventory == null)
+                    return Error("背包加载失败");
+
+                InventoryMutationResult result;
+                if (!InventoryDeleteService.TryDeleteForClient(
+                        inventory, list, (short)slot, count, out result))
+                    return Error("删除失败(槽位为空或该列表不支持删除)");
+
+                if (!GmInventoryStore.Save(conn, characterId, inventory))
+                    return Error("背包保存失败");
+
+                return new
+                {
+                    success = true,
+                    characterId,
+                    listType,
+                    slot,
+                    remaining = result != null ? result.RemainingStackCount : 0,
+                };
+            }
         }
 
         public object BatchDeleteItems(int characterId, List<BatchDeleteEntry> entries)
@@ -209,20 +241,32 @@ namespace DfoGmTool.Services
 
             var deleted = 0;
             var failed = new List<object>();
-            foreach (var entry in entries)
+            using (var conn = new SqliteConnection(_config.ConnectionString))
             {
-                var list = (InventoryListType)entry.ListType;
-                if (!IsDeletable(list, entry.Slot))
+                conn.Open();
+                var inventory = GmInventoryStore.Load(conn, characterId, accountId);
+                if (inventory == null)
+                    return Error("背包加载失败");
+
+                foreach (var entry in entries)
                 {
-                    failed.Add(new { entry.ListType, entry.Slot, reason = "受保护槽位" });
-                    continue;
+                    var list = (InventoryListType)entry.ListType;
+                    if (!IsDeletable(list, entry.Slot))
+                    {
+                        failed.Add(new { entry.ListType, entry.Slot, reason = "受保护槽位" });
+                        continue;
+                    }
+
+                    InventoryMutationResult result;
+                    if (InventoryDeleteService.TryDeleteForClient(
+                            inventory, list, (short)entry.Slot, 0, out result))
+                        deleted++;
+                    else
+                        failed.Add(new { entry.ListType, entry.Slot, reason = "删除失败" });
                 }
 
-                InventoryMutationResult result;
-                if (_store.TryDeleteItem(characterId, accountId, list, (short)entry.Slot, 0, out result))
-                    deleted++;
-                else
-                    failed.Add(new { entry.ListType, entry.Slot, reason = "删除失败" });
+                if (!GmInventoryStore.Save(conn, characterId, inventory))
+                    return Error("背包保存失败");
             }
 
             return new { success = true, characterId, deleted, failedCount = failed.Count, failed };
@@ -231,7 +275,7 @@ namespace DfoGmTool.Services
         // 主背包 slot 分段, 与服务端 ItemMetadataResolver.GetSlotRange / 各 Slot 常量一致
         private static string ResolveMainSegment(int slot)
         {
-            if (slot <= 2) return "货币";        // 0金币 1复活币 2技能点
+            if (slot <= 2) return "货币";        // 0金币 1复活币 2胜点
             if (slot <= 8) return "快捷栏";      // QuickSlot 3-8
             if (slot <= 64) return "装备";       // 9-64 (含租赁)
             if (slot <= 120) return "消耗品";    // 65-120
@@ -242,13 +286,6 @@ namespace DfoGmTool.Services
             if (slot <= 353) return "特殊材料";   // 345-353
             if (slot <= 359) return "账号晶块";   // 354-359 账号共享(accounts表列), 在账号面板调整
             return "其他";
-        }
-
-        private static string ResolvePetSegment(int slot)
-        {
-            if (slot <= 139) return "宠物";       // 0-139
-            if (slot <= 188) return "宠物装备";    // 140-188
-            return "宠物用品";                    // 189-237
         }
 
         public object GiveItem(int characterId, int itemTemplateId, int count, PvfIndexService pvfIndex)
@@ -267,36 +304,53 @@ namespace DfoGmTool.Services
             if (name == null && pvfIndex.IsReady)
                 return Error("物品 ID " + itemTemplateId + " 在 PVF 中不存在(装备/堆叠表都没有)");
 
-            using (var scope = _assetService.OpenScope(characterId, accountId))
+            // 晶块是账号级货币, 走 accounts.cube_* 字段
+            if (CurrencyService.IsCubeFragment(itemTemplateId))
             {
-                // 账号/钱包类特殊资产沿用既有入口，不进入角色实例期限发放。
-                if (CurrencyService.IsCubeFragment(itemTemplateId)
-                    || ReviveCoinService.IsReviveCoinReward(itemTemplateId))
+                using (var conn = new SqliteConnection(_config.ConnectionString))
                 {
-                    if (!_assetService.TryAddItem(scope, itemTemplateId, count, out var legacySlot))
-                        return Error("发放失败(背包可能已满)");
-
-                    scope.Commit();
-                    return new { success = true, characterId, itemTemplateId, name, count, slot = (int)legacySlot };
+                    conn.Open();
+                    using (var tx = conn.BeginTransaction())
+                    {
+                        CurrencyService.AddCubeFragment(conn, tx, accountId, itemTemplateId, count);
+                        tx.Commit();
+                    }
                 }
-
-                var grant = _assetService.TryGrantCharacterItem(scope, itemTemplateId, count);
-                if (!grant.Success)
-                    return Error(grant.Error ?? "发放失败(背包可能已满)");
-
-                scope.Commit();
-                return new
-                {
-                    success = true,
-                    characterId,
-                    itemTemplateId,
-                    name,
-                    count = grant.GrantedCount,
-                    slot = (int)grant.AssignedSlot,
-                    expireTime = grant.ExpireTime,
-                    slots = grant.AffectedSlots,
-                };
+                return new { success = true, characterId, itemTemplateId, name, count, slot = CurrencyService.GetCubeFragmentSlot(itemTemplateId) };
             }
+
+            // 复活币走主背包 1 号虚拟槽
+            if (ReviveCoinService.IsReviveCoinReward(itemTemplateId))
+            {
+                using (var conn = new SqliteConnection(_config.ConnectionString))
+                {
+                    conn.Open();
+                    using (var tx = conn.BeginTransaction())
+                    {
+                        InventoryMainVirtualCountRepository.GrantCurrency(
+                            conn, tx, characterId, ReviveCoinService.WalletSlot, count, int.MaxValue);
+                        tx.Commit();
+                    }
+                }
+                return new { success = true, characterId, itemTemplateId, name, count, slot = (int)ReviveCoinService.WalletSlot };
+            }
+
+            var grant = CharacterItemGrantService.TryGrant(
+                _config.ConnectionString, characterId, accountId, itemTemplateId, count);
+            if (!grant.Success)
+                return Error(grant.Error ?? "发放失败(背包可能已满)");
+
+            return new
+            {
+                success = true,
+                characterId,
+                itemTemplateId,
+                name,
+                count = grant.GrantedCount,
+                slot = (int)grant.AssignedSlot,
+                expireTime = grant.ExpireTime,
+                slots = grant.AffectedSlots,
+            };
         }
 
         public object RemoveItem(int characterId, int itemTemplateId, int count)
@@ -308,15 +362,31 @@ namespace DfoGmTool.Services
             if (!TryGetAccountId(characterId, out accountId))
                 return Error("角色不存在: " + characterId);
 
-            using (var scope = _assetService.OpenScope(characterId, accountId))
+            using (var conn = new SqliteConnection(_config.ConnectionString))
             {
-                short slot;
-                int remaining;
-                if (!_assetService.TryRemoveItem(scope, itemTemplateId, count, out slot, out remaining))
+                conn.Open();
+                var inventory = GmInventoryStore.Load(conn, characterId, accountId);
+                if (inventory == null)
+                    return Error("背包加载失败");
+
+                InventoryMainItemConsumeResult result;
+                if (!inventory.TryConsumeMainItem(itemTemplateId, count, out result)
+                    || !result.Success)
                     return Error("移除失败(角色没有该物品或数量不足)");
 
-                scope.Commit();
-                return new { success = true, characterId, itemTemplateId, count, slot = (int)slot, remaining };
+                if (!GmInventoryStore.Save(conn, characterId, inventory))
+                    return Error("背包保存失败");
+
+                var slot = result.Changes.Slots.Count > 0 ? (int)result.Changes.Slots[0].SlotIndex : -1;
+                return new
+                {
+                    success = true,
+                    characterId,
+                    itemTemplateId,
+                    count,
+                    slot,
+                    remaining = inventory.CountMainItem(itemTemplateId),
+                };
             }
         }
 
@@ -329,29 +399,30 @@ namespace DfoGmTool.Services
             if (!TryGetAccountId(characterId, out accountId))
                 return Error("角色不存在: " + characterId);
 
-            using (var scope = _assetService.OpenScope(characterId, accountId))
+            using (var conn = new SqliteConnection(_config.ConnectionString))
             {
-                if (amount > 0)
+                conn.Open();
+                using (var tx = conn.BeginTransaction())
                 {
-                    _assetService.GrantGold(scope, amount);
-                }
-                else if (!_assetService.TrySpendGold(scope, -amount))
-                {
-                    return Error("扣款失败(金币不足)");
+                    if (amount > 0)
+                    {
+                        CurrencyService.GrantGold(conn, tx, characterId, amount);
+                    }
+                    else if (!CurrencyService.TrySpendGold(conn, tx, characterId, -amount))
+                    {
+                        return Error("扣款失败(金币不足)");
+                    }
+
+                    tx.Commit();
                 }
 
-                scope.Commit();
-            }
-
-            using (var scope = _assetService.OpenScope(characterId, accountId))
-            {
-                var wallet = _assetService.LoadWallet(scope);
+                var wallet = CurrencyService.LoadWallet(conn, null, characterId);
                 return new { success = true, characterId, amount, gold = wallet.Gold };
             }
         }
 
         // 三种角色货币覆写: 金币走 CurrencyService 按差额加扣;
-        // 复活币(slot1)/技能点(slot2)是普通计数行, 按服务端 UpdateStackCount 同语义直写
+        // 复活币(slot1)/胜点(slot2)是虚拟槽, 走服务端虚拟槽仓储同语义直写
         public object SetWalletValue(int characterId, string type, int value)
         {
             if (value < 0)
@@ -363,43 +434,38 @@ namespace DfoGmTool.Services
 
             type = (type ?? string.Empty).Trim().ToLowerInvariant();
 
-            if (type == "gold")
-            {
-                using (var scope = _assetService.OpenScope(characterId, accountId))
-                {
-                    var wallet = _assetService.LoadWallet(scope);
-                    var delta = value - wallet.Gold;
-                    if (delta > 0)
-                        _assetService.GrantGold(scope, delta);
-                    else if (delta < 0 && !_assetService.TrySpendGold(scope, -delta))
-                        return Error("扣减失败");
-                    scope.Commit();
-                }
-                return new { success = true, characterId, type, value };
-            }
-
-            int slot;
-            switch (type)
-            {
-                case "revive": slot = 1; break;
-                case "sp": slot = 2; break;
-                default: return Error("不支持的类型: " + type + " (可用: gold/revive/sp)");
-            }
-
             using (var conn = new SqliteConnection(_config.ConnectionString))
             {
                 conn.Open();
-                using (var cmd = conn.CreateCommand())
+
+                if (type == "gold")
                 {
-                    cmd.CommandText = @"
-UPDATE character_items
-SET stack_count = @v, instance_value = @v, updated_at = CURRENT_TIMESTAMP
-WHERE character_id = @cid AND list_type = 0 AND slot_index = @slot;";
-                    cmd.Parameters.AddWithValue("@v", value);
-                    cmd.Parameters.AddWithValue("@cid", characterId);
-                    cmd.Parameters.AddWithValue("@slot", slot);
-                    if (cmd.ExecuteNonQuery() == 0)
-                        return Error("货币行不存在(slot " + slot + ")");
+                    using (var tx = conn.BeginTransaction())
+                    {
+                        var wallet = CurrencyService.LoadWallet(conn, tx, characterId);
+                        var delta = value - wallet.Gold;
+                        if (delta > 0)
+                            CurrencyService.GrantGold(conn, tx, characterId, delta);
+                        else if (delta < 0 && !CurrencyService.TrySpendGold(conn, tx, characterId, -delta))
+                            return Error("扣减失败");
+                        tx.Commit();
+                    }
+                    return new { success = true, characterId, type, value };
+                }
+
+                short slot;
+                switch (type)
+                {
+                    case "revive": slot = 1; break;
+                    case "sp": slot = 2; break;
+                    default: return Error("不支持的类型: " + type + " (可用: gold/revive/sp)");
+                }
+
+                using (var tx = conn.BeginTransaction())
+                {
+                    InventoryMainVirtualCountRepository.UpsertCurrencySlot(
+                        conn, tx, characterId, slot, value);
+                    tx.Commit();
                 }
             }
             return new { success = true, characterId, type, value };
@@ -416,30 +482,31 @@ WHERE character_id = @cid AND list_type = 0 AND slot_index = @slot;";
                 return Error("角色不存在: " + characterId);
 
             var useToken = string.Equals(type, "token", StringComparison.OrdinalIgnoreCase);
-            using (var scope = _assetService.OpenScope(characterId, accountId))
+            using (var conn = new SqliteConnection(_config.ConnectionString))
             {
-                if (amount > 0)
+                conn.Open();
+                using (var tx = conn.BeginTransaction())
                 {
-                    if (useToken)
-                        CurrencyService.GrantTokenCera(scope.Connection, scope.Transaction, characterId, amount);
+                    if (amount > 0)
+                    {
+                        if (useToken)
+                            CurrencyService.GrantTokenCera(conn, tx, characterId, amount);
+                        else
+                            CurrencyService.GrantCera(conn, tx, characterId, amount);
+                    }
                     else
-                        CurrencyService.GrantCera(scope.Connection, scope.Transaction, characterId, amount);
-                }
-                else
-                {
-                    var ok = useToken
-                        ? CurrencyService.TrySpendTokenCera(scope.Connection, scope.Transaction, characterId, -amount)
-                        : CurrencyService.TrySpendCera(scope.Connection, scope.Transaction, characterId, -amount);
-                    if (!ok)
-                        return Error("扣减失败(余额不足)");
+                    {
+                        var ok = useToken
+                            ? CurrencyService.TrySpendTokenCera(conn, tx, characterId, -amount)
+                            : CurrencyService.TrySpendCera(conn, tx, characterId, -amount);
+                        if (!ok)
+                            return Error("扣减失败(余额不足)");
+                    }
+
+                    tx.Commit();
                 }
 
-                scope.Commit();
-            }
-
-            using (var scope = _assetService.OpenScope(characterId, accountId))
-            {
-                var wallet = _assetService.LoadWallet(scope);
+                var wallet = CurrencyService.LoadWallet(conn, null, characterId);
                 return new { success = true, characterId, accountId, amount, cera = wallet.Cera, tokenCera = wallet.TokenCera };
             }
         }

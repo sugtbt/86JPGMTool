@@ -300,16 +300,16 @@ namespace DfoGmTool.Services
 
         private static ItemExpirationDefinition ResolveEquipmentExpiration(EquipmentFile equipment)
         {
-            var rawExpiration = equipment.GetStringValue("expiration date");
-            if (string.IsNullOrWhiteSpace(rawExpiration) || rawExpiration.Trim() == "0")
-                return new ItemExpirationDefinition(true, 0, 0, false, false);
+            // 服务端同款期限解析(StackableExpirationPolicyResolver.cs 内的 Equipment 变体)
+            if (!EquipmentExpirationPolicyResolver.TryResolve(equipment, out var policy))
+                return new ItemExpirationDefinition(true, 0, 0, false, true);
 
-            return ItemGrantExpirationResolver.TryParsePvfExpirationUnixTime(
-                rawExpiration,
-                -1,
-                out var absoluteExpiration)
-                ? new ItemExpirationDefinition(true, absoluteExpiration, 0, false, false)
-                : new ItemExpirationDefinition(true, 0, 0, false, true);
+            return new ItemExpirationDefinition(
+                true,
+                policy.AbsoluteExpirationUnixTime,
+                policy.UsablePeriodDays,
+                false,
+                false);
         }
 
         private static ItemExpirationDefinition ResolveStackableExpiration(StackableItemFile stackable)
@@ -317,11 +317,21 @@ namespace DfoGmTool.Services
             if (!StackableExpirationPolicyResolver.TryResolve(stackable, out var policy))
                 return new ItemExpirationDefinition(true, 0, 0, false, true);
 
+            // [daily delete item] 不在服务端 policy 模型内, 直接读原始标签
+            var dailyDeleteItem = false;
+            if (stackable?.Root != null
+                && StackablePvfValueReader.TryReadOptionalSingleValue(
+                    stackable, "daily delete item", out var hasDailyDelete, out _)
+                && hasDailyDelete)
+            {
+                dailyDeleteItem = true;
+            }
+
             return new ItemExpirationDefinition(
                 true,
                 policy.AbsoluteExpirationUnixTime,
                 policy.UsablePeriodDays,
-                policy.DailyDeleteItem,
+                dailyDeleteItem,
                 false);
         }
 

@@ -63,9 +63,10 @@ ORDER BY c.character_id;";
                 return Error("角色不存在: " + characterId);
 
             WalletSnapshot wallet;
-            using (var scope = _assetService.OpenScope(characterId, accountId))
+            using (var conn = new SqliteConnection(_config.ConnectionString))
             {
-                wallet = _assetService.LoadWallet(scope);
+                conn.Open();
+                wallet = CurrencyService.LoadWallet(conn, null, characterId);
             }
 
             using (var conn = new SqliteConnection(_config.ConnectionString))

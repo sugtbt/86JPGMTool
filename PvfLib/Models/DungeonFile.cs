@@ -22,6 +22,7 @@ namespace GmPvfLib
     {
         public int SelectCount { get; set; }
         public bool Regenerate { get; set; }
+        public int MinimapIcon { get; set; }
         public List<RidableObject> Objects { get; set; } = new List<RidableObject>();
     }
 
@@ -433,7 +434,9 @@ namespace GmPvfLib
                     case "adjust mob exp by level": dgn.AdjustMobExpByLevel = ParseInt(data); break;
                     case "blood max round": dgn.BloodMaxRound = ParseInt(data); break;
                     case "mob level charac level replace flag": dgn.MobLevelCharacLevelReplaceFlag = ParseInt(data); break;
-                    case "tower of despair": dgn.TowerOfDespair = ParseInt(data); break;
+                    case "tower of despair":
+                        dgn.TowerOfDespair = string.IsNullOrWhiteSpace(data) ? 1 : ParseInt(data);
+                        break;
                     case "tower fp cubepiece": dgn.TowerFpCubepiece = ParseInt(data); break;
                     case "tower limit of stackable item": dgn.TowerLimitOfStackableItem = ParseInt(data); break;
                     case "tower max clear item num": dgn.TowerMaxClearItemNum = ParseInt(data); break;
@@ -518,15 +521,15 @@ namespace GmPvfLib
                     case "tournament clear reward exp": dgn.TournamentClearRewardExp = data; break;
                     case "clear map": dgn.ClearMap = data; break;
                     case "clear reward item": dgn.ClearRewardItem = data; break;
-                    case "boss room entrance condition": dgn.BossRoomEntranceCondition = data; break;
+                    case "boss room entrance condition": dgn.BossRoomEntranceCondition = ReadRawNodeData(node, text, data); break;
                     case "named monster map pos": dgn.NamedMonsterMapPos = data; break;
-                    case "warp map condition": dgn.WarpMapCondition = data; break;
-                    case "dungeon minimap icon setting": dgn.DungeonMinimapIconSetting = data; break;
+                    case "warp map condition": dgn.WarpMapCondition = node.GetContent(text).Trim(); break;
+                    case "dungeon minimap icon setting": dgn.DungeonMinimapIconSetting = ReadRawNodeData(node, text, data); break;
                     case "realdungeon checkup": dgn.RealdungeonCheckup = data; break;
                     case "common passive object": dgn.CommonPassiveObject = data; break;
                     case "on clear add passive object": dgn.OnClearAddPassiveObject = data; break;
                     case "appendage destory object": dgn.AppendageDestoryObject = data; break;
-                    case "linked dungeon": dgn.LinkedDungeon = data; break;
+                    case "linked dungeon": dgn.LinkedDungeon = ReadRawNodeData(node, text, data); break;
                     case "clear action": dgn.ClearAction = data; break;
                     case "point by type": dgn.PointByType = data; break;
                     case "dungeon exp bonus monster": dgn.DungeonExpBonusMonster = data; break;
@@ -603,6 +606,9 @@ namespace GmPvfLib
             // Multi-group format: levelOverride flag count [itemId dropRate]... repeated
             // Each group = one stDungeonAssignItem_t entry
             var vals = ParseIntArray(data);
+            if (vals == null || vals.Length < 3)
+                return;
+
             int pos = 0;
             int idx = 0;
             while (pos + 2 < vals.Length)
@@ -701,6 +707,9 @@ namespace GmPvfLib
                         break;
                     case "regenerate":
                         script.Regenerate = ParseInt(childData) != 0;
+                        break;
+                    case "minimap icon":
+                        script.MinimapIcon = ParseInt(childData);
                         break;
                     case "object":
                         var obj = new RidableObject();
@@ -893,6 +902,15 @@ namespace GmPvfLib
         #endregion
 
         #region 辅助
+
+        private static string ReadRawNodeData(ScriptNode node, string text, string data)
+        {
+            if (!string.IsNullOrWhiteSpace(data))
+                return data;
+            if (node == null || node.Children == null || node.Children.Count == 0)
+                return data ?? string.Empty;
+            return node.GetContent(text).Trim();
+        }
 
         private static void ParseCutsceneImage(string data, DungeonFile dgn)
         {

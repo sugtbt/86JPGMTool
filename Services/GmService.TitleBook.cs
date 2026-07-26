@@ -46,8 +46,8 @@ namespace DfoGmTool.Services
                     conn.Open();
                     using (var tx = conn.BeginTransaction())
                     {
-                        new CharacterTitleBookRepository(_config.ConnectionString)
-                            .ClearItem(conn, tx, characterId, slot.Category, slot.Index);
+                        CharacterTitleBookRepository.SaveSlot(
+                            conn, tx, characterId, slot.Category, slot.Index, core: null);
                         tx.Commit();
                     }
                 }

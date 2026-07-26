@@ -20,7 +20,7 @@ namespace DfoGmTool.ServerCore.GameWorld
             RentalWeaponInventoryMapper.ResetForPvfChange();
             SkillDataProvider.ResetForPvfChange();
             SpTableProvider.ResetForPvfChange();
-            SqliteInventoryStore.ResetForPvfChange();
+            StackableItemProvider.ResetForPvfChange();
         }
     }
 }

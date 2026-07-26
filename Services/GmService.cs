@@ -26,8 +26,6 @@ namespace DfoGmTool.Services
 
         private readonly GmConfig _config;
         private readonly PvfIndexService _pvfIndex;
-        private readonly SqliteInventoryStore _store;
-        private readonly SqliteAssetService _assetService;
         private readonly SupplementalItemExpirationService _supplementalItemExpiration;
         private readonly Lazy<TitleBookMutationService> _titleBookMutation;
         private readonly AccountProgressService _accountProgress;
@@ -42,8 +40,6 @@ namespace DfoGmTool.Services
         {
             _config = config;
             _pvfIndex = pvfIndex;
-            _store = new SqliteInventoryStore(config.DatabasePath, config.SchemaPath);
-            _assetService = new SqliteAssetService(config.DatabasePath, config.SchemaPath, _store);
             _supplementalItemExpiration = new SupplementalItemExpirationService(config.ConnectionString);
             _titleBookMutation = new Lazy<TitleBookMutationService>(
                 () => new TitleBookMutationService(config.ConnectionString));

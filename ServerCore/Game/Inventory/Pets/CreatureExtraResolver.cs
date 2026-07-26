@@ -24,21 +24,18 @@ namespace DfoGmTool.ServerCore.Game.Inventory
     {
         private static readonly ConcurrentDictionary<int, bool> CreatureExtraCache = new ConcurrentDictionary<int, bool>();
         private static readonly ConcurrentDictionary<int, bool> PetInventoryEquipmentCache = new ConcurrentDictionary<int, bool>();
-        private static readonly object CacheLock = new object();
 
-        private static Lazy<LstFile> EquipmentList = CreateEquipmentList();
+        // GM local-patch: readonly 改可写以支持运行时切换 PVF 后的缓存重置
+        private static Lazy<LstFile> EquipmentList = new Lazy<LstFile>(
+            () => LstFile.Parse(PvfArchiveAccessor.ReadText("equipment/equipment.lst")));
 
+        // GM local-patch: 运行时切换 PVF 的缓存重置(台账 local-patch 惯例)
         internal static void ResetForPvfChange()
         {
             CreatureExtraCache.Clear();
             PetInventoryEquipmentCache.Clear();
-            lock (CacheLock)
-                EquipmentList = CreateEquipmentList();
-        }
-
-        private static Lazy<LstFile> CreateEquipmentList()
-        {
-            return new Lazy<LstFile>(() => LstFile.Parse(PvfArchiveAccessor.ReadText("equipment/equipment.lst")));
+            EquipmentList = new Lazy<LstFile>(
+                () => LstFile.Parse(PvfArchiveAccessor.ReadText("equipment/equipment.lst")));
         }
 
         

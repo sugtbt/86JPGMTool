@@ -1,6 +1,7 @@
 using DfoGmTool.ServerCore.GameWorld;
 using GmPvfLib;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.RegularExpressions;
@@ -12,8 +13,6 @@ namespace DfoGmTool.ServerCore.Game.Inventory
         public string ItemKind { get; set; } = "unknown";
 
         public string StackableType { get; set; }
-
-        internal StackableItemFile StackableFile { get; set; }
 
         public string PvfFilePath { get; set; }
 
@@ -39,6 +38,8 @@ namespace DfoGmTool.ServerCore.Game.Inventory
 
         public string EquipmentType { get; set; }
 
+        public string ItemCategory { get; set; }
+
         public string AttachType { get; set; }
 
         public IReadOnlyList<string> ImpossibleContents { get; set; } = Array.Empty<string>();
@@ -49,33 +50,74 @@ namespace DfoGmTool.ServerCore.Game.Inventory
 
         public bool IsMaterialExchange => NeedMaterialId > 0 && NeedMaterialCount > 0;
 
+        internal static ItemMetadata CreateDefaultStackable()
+            => new ItemMetadata { ItemKind = "stackable" };
+
+        internal bool IsPrimaryStackableFamily(string family)
+        {
+            if (string.IsNullOrWhiteSpace(family)
+                || !TryGetPrimaryStackableTag(out var tag))
+            {
+                return false;
+            }
+
+            var familyEnd = 0;
+            while (familyEnd < tag.Length && !char.IsWhiteSpace(tag[familyEnd]))
+                familyEnd++;
+            if (familyEnd == 0)
+                return false;
+
+            return string.Equals(
+                tag.Substring(0, familyEnd),
+                family.Trim(),
+                StringComparison.OrdinalIgnoreCase);
+        }
+
         public void GetSlotRange(out int slotStart, out int slotEnd)
         {
             if (string.Equals(ItemKind, "equipment", StringComparison.Ordinal))
             {
                 slotStart = 9; slotEnd = 64; return;
             }
-            if (StackableType == null)
+            var st = NormalizeStackableType();
+            TryGetPrimaryStackableTag(out var primaryTag);
+            if (string.Equals(primaryTag, "material expert job", StringComparison.OrdinalIgnoreCase))
+            { slotStart = 233; slotEnd = 288; return; }
+            if (string.Equals(primaryTag, "avatar emblem", StringComparison.OrdinalIgnoreCase))
+            { slotStart = 289; slotEnd = 344; return; }
+            if (IsPrimaryStackableFamily("material"))
             {
-                slotStart = 65; slotEnd = 120; return;
-            }
-            var st = StackableType.Replace("`", "").Trim().ToLowerInvariant();
-            if (st.StartsWith("[material]"))
-            {
-                if (st.EndsWith("4"))
+                if (st.EndsWith("4", StringComparison.Ordinal))
                 { slotStart = 345; slotEnd = 359; }
                 else
                 { slotStart = 121; slotEnd = 176; }
                 return;
             }
-            if (st.StartsWith("[quest]"))
+            if (IsPrimaryStackableFamily("quest"))
             { slotStart = 177; slotEnd = 232; return; }
-            if (st.StartsWith("[material expert job]"))
-            { slotStart = 233; slotEnd = 288; return; }
-            if (st.StartsWith("[avatar emblem]"))
-            { slotStart = 289; slotEnd = 344; return; }
             slotStart = 65; slotEnd = 120;
         }
+
+        private bool TryGetPrimaryStackableTag(out string tag)
+        {
+            tag = string.Empty;
+            if (!IsStackable)
+                return false;
+
+            var normalized = NormalizeStackableType();
+            if (normalized.Length < 3 || normalized[0] != '[')
+                return false;
+
+            var end = normalized.IndexOf(']', 1);
+            if (end <= 1)
+                return false;
+
+            tag = normalized.Substring(1, end - 1).Trim();
+            return tag.Length > 0;
+        }
+
+        private string NormalizeStackableType()
+            => (StackableType ?? string.Empty).Replace("`", string.Empty).Trim();
     }
 
     internal sealed class ItemSellRates
@@ -102,10 +144,25 @@ namespace DfoGmTool.ServerCore.Game.Inventory
 
     public static class ItemMetadataResolver 
     {
-        private static readonly object CacheLock = new object();
-        internal static Lazy<LstFile> EquipmentList = CreateEquipmentList();
-        private static Lazy<LstFile> StackableList = CreateStackableList();
-        private static Lazy<ItemSellRates> SellRates = CreateSellRates();
+        // GM local-patch: readonly 改可写以支持运行时切换 PVF 后的缓存重置
+        internal static Lazy<LstFile> EquipmentList = new Lazy<LstFile>(() => LstFile.Parse(PvfArchiveAccessor.ReadText("equipment/equipment.lst")));
+        private static Lazy<LstFile> StackableList = new Lazy<LstFile>(() => LstFile.Parse(PvfArchiveAccessor.ReadText("stackable/stackable.lst")));
+        private static Lazy<ItemSellRates> SellRates = new Lazy<ItemSellRates>(() => ItemSellRates.Parse(PvfArchiveAccessor.ReadText("equipment/pricetable.tbl")));
+        // PvfArchiveAccessor与equipment.lst都是进程级不可变Lazy，装备类型也按进程缓存。
+        private static readonly ConcurrentDictionary<int, Lazy<string>> EquipmentTypeCache
+            = new ConcurrentDictionary<int, Lazy<string>>();
+        private static readonly ConcurrentDictionary<int, Lazy<byte>> EmblemSocketTypeCache
+            = new ConcurrentDictionary<int, Lazy<byte>>();
+
+        // GM local-patch: 运行时切换 PVF 的缓存重置(台账 local-patch 惯例)
+        internal static void ResetForPvfChange()
+        {
+            EquipmentList = new Lazy<LstFile>(() => LstFile.Parse(PvfArchiveAccessor.ReadText("equipment/equipment.lst")));
+            StackableList = new Lazy<LstFile>(() => LstFile.Parse(PvfArchiveAccessor.ReadText("stackable/stackable.lst")));
+            SellRates = new Lazy<ItemSellRates>(() => ItemSellRates.Parse(PvfArchiveAccessor.ReadText("equipment/pricetable.tbl")));
+            EquipmentTypeCache.Clear();
+            EmblemSocketTypeCache.Clear();
+        }
         private static readonly Regex AvatarSocketRegex = new Regex(@"\[\s*([ABCDSM])\s+socket\s*\]", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         private const string AvatarTypeSelectTag = "[avatar type select]";
         private const string AvatarTypeSelectEndTag = "[/avatar type select]";
@@ -113,38 +170,18 @@ namespace DfoGmTool.ServerCore.Game.Inventory
         private const string EmblemSocketDefaultEndTag = "[/emblem socket default]";
         private const string AvatarEmblemSocketNumTag = "[avatar emblem socket num]";
 
-        internal static void ResetForPvfChange()
-        {
-            lock (CacheLock)
-            {
-                EquipmentList = CreateEquipmentList();
-                StackableList = CreateStackableList();
-                SellRates = CreateSellRates();
-            }
-        }
-
-        private static Lazy<LstFile> CreateEquipmentList()
-        {
-            return new Lazy<LstFile>(() => LstFile.Parse(PvfArchiveAccessor.ReadText("equipment/equipment.lst")));
-        }
-
-        private static Lazy<LstFile> CreateStackableList()
-        {
-            return new Lazy<LstFile>(() => LstFile.Parse(PvfArchiveAccessor.ReadText("stackable/stackable.lst")));
-        }
-
-        private static Lazy<ItemSellRates> CreateSellRates()
-        {
-            return new Lazy<ItemSellRates>(() => ItemSellRates.Parse(PvfArchiveAccessor.ReadText("equipment/pricetable.tbl")));
-        }
-
         public static ItemMetadata Resolve(int itemTemplateId)
         {
             var equipmentEntry = EquipmentList.Value.GetById(itemTemplateId);
             if (equipmentEntry != null)
             {
                 var equipment = EquipmentFile.Parse(PvfArchiveAccessor.ReadText(Path.Combine("equipment", equipmentEntry.FilePath)));
-                var buyGold = Math.Max(0, equipment.Price >= 0 ? equipment.Price : equipment.Value);
+                ResolveNeedMaterial(equipment.NeedMaterial, out var equipmentNeedMatId, out var equipmentNeedMatCount);
+                // Keep legacy ordinary-NPC pricing intact.  Only entries that
+                // actually exchange [need material] use PVF's price correction.
+                var buyGold = equipmentNeedMatId > 0 && equipmentNeedMatCount > 0
+                    ? ResolveBuyGold(equipment.Price, equipment.AddPrice)
+                    : Math.Max(0, equipment.Price >= 0 ? equipment.Price : equipment.Value);
                 
                 
                 var baseSellPrice = equipment.Value >= 0 ? equipment.Value : buyGold;
@@ -166,8 +203,11 @@ namespace DfoGmTool.ServerCore.Game.Inventory
                     MinimumLevel = equipment.MinimumLevel,
                     Rarity = equipment.Rarity,
                     EquipmentType = NormalizeEquipmentType(equipment.EquipmentType),
+                    ItemCategory = equipment.ItemCategory,
                     AttachType = equipment.AttachType,
                     ImpossibleContents = equipment.ImpossibleContentItems,
+                    NeedMaterialId = equipmentNeedMatId,
+                    NeedMaterialCount = equipmentNeedMatCount,
                 };
             }
 
@@ -175,13 +215,9 @@ namespace DfoGmTool.ServerCore.Game.Inventory
             if (stackableEntry != null)
             {
                 var stackable = StackableItemFile.Parse(PvfArchiveAccessor.ReadText(Path.Combine("stackable", stackableEntry.FilePath)));
-                var buyGold = Math.Max(0, stackable.Price >= 0 ? stackable.Price : stackable.Value);
-                
-                
-                
-                
-                var baseSellPrice = stackable.Value >= 0 ? stackable.Value : (stackable.Price >= 0 ? stackable.Price : 0);
-                var sellGold = baseSellPrice > 0 ? Math.Max(1, baseSellPrice * SellRates.Value.Stackable / 1000) : 0;
+                var sellGold = stackable.Value >= 0
+                    ? stackable.Value / 5
+                    : (stackable.Price > 0 ? stackable.Price / 5 : 0);
 
                 int needMatId = 0, needMatCount = 0;
                 if (!string.IsNullOrWhiteSpace(stackable.NeedMaterial))
@@ -196,12 +232,16 @@ namespace DfoGmTool.ServerCore.Game.Inventory
 
                 
                 
-                var hasMaterialCost = needMatId > 0 && needMatCount > 0;
+                // Keep legacy ordinary-NPC pricing intact.  Material exchanges
+                // are the only path where [add price] corrects [price] and
+                // [value] must never become a purchase cost.
+                var buyGold = needMatId > 0 && needMatCount > 0
+                    ? ResolveBuyGold(stackable.Price, stackable.AddPrice)
+                    : Math.Max(0, stackable.Price >= 0 ? stackable.Price : stackable.Value);
                 return new ItemMetadata
                 {
                     ItemKind = "stackable",
                     StackableType = stackable.StackableType,
-                    StackableFile = stackable,
                     PvfFilePath = stackableEntry.FilePath,
                     BuyGold = buyGold,
                     SellGold = sellGold,
@@ -212,6 +252,8 @@ namespace DfoGmTool.ServerCore.Game.Inventory
                     Grade = stackable.Grade,
                     MinimumLevel = stackable.MinimumLevel,
                     Rarity = stackable.Rarity,
+                    ItemCategory = stackable.ItemCategory,
+                    AttachType = stackable.AttachType,
                     ImpossibleContents = stackable.ImpossibleContentItems,
                 };
             }
@@ -229,6 +271,39 @@ namespace DfoGmTool.ServerCore.Game.Inventory
         public static LstEntry GetStackableEntry(int itemTemplateId)
         {
             return StackableList.Value.GetById(itemTemplateId);
+        }
+
+        // [value] is the NPC sell value only.  NPC purchase cost comes solely
+        // from [price], adjusted by the optional signed [add price] field.
+        // A missing [price] therefore means a zero-gold purchase, even when an
+        // exchange also defines [need material].
+        internal static int ResolveBuyGold(int price, int addPrice)
+        {
+            if (price < 0)
+                return 0;
+
+            var effectivePrice = (long)price + addPrice;
+            return effectivePrice <= 0 ? 0 : effectivePrice > int.MaxValue ? int.MaxValue : (int)effectivePrice;
+        }
+
+        private static void ResolveNeedMaterial(string needMaterial, out int itemId, out int count)
+        {
+            itemId = 0;
+            count = 0;
+            if (string.IsNullOrWhiteSpace(needMaterial))
+                return;
+
+            var parts = needMaterial.Trim().Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length < 2)
+                return;
+
+            int.TryParse(parts[0], out itemId);
+            int.TryParse(parts[1], out count);
+            if (itemId <= 0 || count <= 0)
+            {
+                itemId = 0;
+                count = 0;
+            }
         }
 
         public static LstEntry GetEquipmentEntry(int itemTemplateId)
@@ -259,7 +334,54 @@ namespace DfoGmTool.ServerCore.Game.Inventory
                 : null;
         }
 
+        internal static bool TryResolveItemKind(int itemTemplateId, out byte itemKind)
+        {
+            itemKind = ItemCore.KindUnknown;
+            if (itemTemplateId <= 0)
+                return false;
+
+            ItemMetadata metadata;
+            try
+            {
+                metadata = Resolve(itemTemplateId);
+            }
+            catch
+            {
+                return false;
+            }
+
+            return TryResolveItemKind(itemTemplateId, metadata, out itemKind);
+        }
+
+        internal static bool TryResolveItemKind(int itemTemplateId, ItemMetadata metadata, out byte itemKind)
+        {
+            itemKind = ItemCore.KindUnknown;
+            if (metadata == null)
+                return false;
+
+            if (string.Equals(metadata.ItemKind, "equipment", StringComparison.Ordinal))
+            {
+                itemKind = ResolveEquipmentItemKind(metadata);
+                return true;
+            }
+
+            if (metadata.IsStackable)
+            {
+                itemKind = ResolveStackableItemKind(itemTemplateId, metadata);
+                return true;
+            }
+
+            return false;
+        }
+
         public static byte ResolveEmblemSocketType(int itemTemplateId)
+        {
+            return EmblemSocketTypeCache.GetOrAdd(
+                itemTemplateId,
+                id => new Lazy<byte>(() => ResolveEmblemSocketTypeCore(id))).Value;
+        }
+
+        private static byte ResolveEmblemSocketTypeCore(int itemTemplateId)
         {
             var stackableEntry = StackableList.Value.GetById(itemTemplateId);
             if (stackableEntry == null)
@@ -276,43 +398,15 @@ namespace DfoGmTool.ServerCore.Game.Inventory
                 return 0;
             }
 
-            var stackableType = stackable.StackableType != null
-                ? stackable.StackableType.Replace("`", "").Trim()
-                : string.Empty;
-            if (!stackableType.StartsWith("[avatar emblem]", StringComparison.OrdinalIgnoreCase))
-                return 0;
-
-            var text = string.Join(" ", new[]
-            {
-                stackableEntry.FilePath,
-                stackable.Name,
-                stackable.ItemCategory,
-                stackable.ItemGroupName,
-                stackable.AttachType,
-                stackable.StringData,
-                stackable.IntData,
-                stackable.Equipment,
-                string.Join(" ", stackable.StringDataItems ?? new List<string>()),
-            }).ToLowerInvariant();
-
-            byte socketType = 0;
-            if (text.Contains("red") || text.Contains("[red]"))
-                socketType |= 0x01;
-            if (text.Contains("yellow") || text.Contains("[yellow]"))
-                socketType |= 0x02;
-            if (text.Contains("green") || text.Contains("[green]"))
-                socketType |= 0x04;
-            if (text.Contains("blue") || text.Contains("[blue]"))
-                socketType |= 0x08;
-            if (text.Contains("platinum") || text.Contains("[platinum]"))
-                socketType |= 0x10;
-            if (text.Contains("multi") || text.Contains("all color") || text.Contains("rainbow") || text.Contains("colorful"))
-                socketType |= 0x0F;
-
-            return socketType;
+            return stackable.AvatarEmblemSocketType;
         }
 
         public static IReadOnlyList<byte> ResolveAvatarSocketTypes(int itemTemplateId)
+        {
+            return ResolveAvatarOpenSocketTypes(itemTemplateId);
+        }
+
+        public static IReadOnlyList<byte> ResolveAvatarOpenSocketTypes(int itemTemplateId)
         {
             var result = new List<byte>();
             var equipmentEntry = EquipmentList.Value.GetById(itemTemplateId);
@@ -324,13 +418,30 @@ namespace DfoGmTool.ServerCore.Game.Inventory
                 var text = PvfArchiveAccessor.ReadText(Path.Combine("equipment", equipmentEntry.FilePath));
                 var section = ExtractAvatarTypeSelectSection(text);
                 AddAvatarSocketMatches(result, section, 5);
-
-                if (result.Count == 0)
-                    AddAvatarSocketMatches(result, ExtractEmblemSocketDefaultSection(text), ResolveAvatarEmblemSocketNum(text));
             }
             catch (Exception ex)
             {
-                FileLogger.Log($"  [AvatarSocket] ResolveAvatarSocketTypes(0x{itemTemplateId:X8}) failed: {ex.Message}");
+                FileLogger.Log($"  [AvatarSocket] ResolveAvatarOpenSocketTypes(0x{itemTemplateId:X8}) failed: {ex.Message}");
+            }
+
+            return result;
+        }
+
+        public static IReadOnlyList<byte> ResolveAvatarDefaultSocketTypes(int itemTemplateId)
+        {
+            var result = new List<byte>();
+            var equipmentEntry = EquipmentList.Value.GetById(itemTemplateId);
+            if (equipmentEntry == null)
+                return result;
+
+            try
+            {
+                var text = PvfArchiveAccessor.ReadText(Path.Combine("equipment", equipmentEntry.FilePath));
+                AddAvatarSocketMatches(result, ExtractEmblemSocketDefaultSection(text), ResolveAvatarEmblemSocketNum(text));
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log($"  [AvatarSocket] ResolveAvatarDefaultSocketTypes(0x{itemTemplateId:X8}) failed: {ex.Message}");
             }
 
             return result;
@@ -518,6 +629,78 @@ namespace DfoGmTool.ServerCore.Game.Inventory
             return true;
         }
 
+        public static bool TryValidatePetEnchantByBeadTarget(int beadItemTemplateId, int targetItemTemplateId, byte enchantUpgradeCount, out int enchantCardItemId, out string rejectReason)
+        {
+            enchantCardItemId = 0;
+            rejectReason = null;
+
+            if (!TryLoadStackable(beadItemTemplateId, out var bead))
+            {
+                rejectReason = "bead is not found in stackable.lst";
+                return false;
+            }
+
+            if (bead.MonsterCardId > 0)
+                enchantCardItemId = bead.MonsterCardId;
+            else if (bead.EnchantIndex > 0)
+                enchantCardItemId = bead.EnchantIndex;
+            else
+            {
+                rejectReason = "bead has no monster card id/enchant index";
+                return false;
+            }
+
+            if (bead.TargetItemIds != null && bead.TargetItemIds.Count > 0 && !bead.TargetItemIds.Contains(targetItemTemplateId))
+            {
+                rejectReason = "target item id is not allowed by bead target item id";
+                return false;
+            }
+
+            StackableItemFile card = null;
+            if (bead.MonsterCardId > 0)
+            {
+                if (!TryLoadStackable(bead.MonsterCardId, out card))
+                {
+                    rejectReason = "monster card is not found in stackable.lst";
+                    return false;
+                }
+            }
+            else
+            {
+                TryLoadStackable(enchantCardItemId, out card);
+            }
+
+            if (card != null)
+            {
+                var allowedTypes = ExtractAllowedEquipmentTypes(card.StringDataItems);
+                if (allowedTypes.Count == 0 || !allowedTypes.Contains("[creature]"))
+                {
+                    rejectReason = "target equipment type is not allowed by monster card string data";
+                    return false;
+                }
+
+                if (card.EnchantTable.Count > 0 && !card.EnchantTable.Contains(enchantUpgradeCount))
+                {
+                    rejectReason = "enchant upgrade count is not allowed by monster card enchant table";
+                    return false;
+                }
+
+                if (card.EnchantTable.Count == 0 && enchantUpgradeCount != 0)
+                {
+                    rejectReason = "monster card has no enchant table for upgraded bead";
+                    return false;
+                }
+            }
+
+            if (card == null && enchantUpgradeCount != 0)
+            {
+                rejectReason = "upgraded enchant bead requires monster card enchant table";
+                return false;
+            }
+
+            return true;
+        }
+
         private static bool TryLoadStackable(int itemTemplateId, out StackableItemFile stackable)
         {
             stackable = null;
@@ -531,14 +714,22 @@ namespace DfoGmTool.ServerCore.Game.Inventory
 
         private static bool TryGetEquipmentType(int itemTemplateId, out string equipmentType)
         {
-            equipmentType = null;
-            var equipmentEntry = EquipmentList.Value.GetById(itemTemplateId);
+            var equipmentList = EquipmentList.Value;
+            var cached = EquipmentTypeCache.GetOrAdd(
+                itemTemplateId,
+                id => new Lazy<string>(() => LoadEquipmentType(equipmentList, id)));
+            equipmentType = cached.Value;
+            return !string.IsNullOrWhiteSpace(equipmentType);
+        }
+
+        private static string LoadEquipmentType(LstFile equipmentList, int itemTemplateId)
+        {
+            var equipmentEntry = equipmentList.GetById(itemTemplateId);
             if (equipmentEntry == null)
-                return false;
+                return null;
 
             var equipment = EquipmentFile.Parse(PvfArchiveAccessor.ReadText(Path.Combine("equipment", equipmentEntry.FilePath)));
-            equipmentType = NormalizeEquipmentType(equipment.EquipmentType);
-            return !string.IsNullOrWhiteSpace(equipmentType);
+            return NormalizeEquipmentType(equipment.EquipmentType);
         }
 
         private static HashSet<string> ExtractAllowedEquipmentTypes(List<string> stringDataItems)
@@ -607,10 +798,11 @@ namespace DfoGmTool.ServerCore.Game.Inventory
         /// </summary>
         public static bool IsCloneAvatarItem(int itemTemplateId)
         {
-            var equipmentEntry = EquipmentList.Value.GetById(itemTemplateId);
-            if (equipmentEntry == null) return false;
-            var equipment = EquipmentFile.Parse(PvfArchiveAccessor.ReadText(Path.Combine("equipment", equipmentEntry.FilePath)));
-            return string.Equals(equipment.ItemCategory, "clear avatar", StringComparison.OrdinalIgnoreCase);
+            if (!TryLoadEquipmentFile(itemTemplateId, out var equipment))
+                return false;
+
+            return equipment.ClearAvatar == 1
+                || string.Equals(equipment.ItemCategory, "clear avatar", StringComparison.OrdinalIgnoreCase);
         }
 
         public static bool IsNameTagItem(int itemTemplateId)
@@ -626,6 +818,30 @@ namespace DfoGmTool.ServerCore.Game.Inventory
             return CreatureExtraResolver.IsPetInventoryEquipment(itemTemplateId);
         }
 
+        internal static bool IsCreatureItem(int itemTemplateId)
+        {
+            try
+            {
+                return CreatureExtraResolver.HasCreatureExtra(itemTemplateId);
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log($"[ItemMetadataResolver] IsCreatureItem(0x{itemTemplateId:X8}) failed: {ex.Message}");
+                return false;
+            }
+        }
+
+        internal static bool IsAvatarItem(ItemMetadata metadata)
+        {
+            var path = metadata?.PvfFilePath;
+            if (string.IsNullOrWhiteSpace(path))
+                return false;
+
+            var normalizedPath = "/" + path.Replace('\\', '/').Trim('/');
+            return normalizedPath.IndexOf("/avatar/", StringComparison.OrdinalIgnoreCase) >= 0
+                || normalizedPath.IndexOf("/at_avatar/", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
         public static bool IsPetConsumableItem(ItemMetadata metadata)
         {
             if (metadata == null || !metadata.IsStackable || string.IsNullOrWhiteSpace(metadata.StackableType))
@@ -633,6 +849,72 @@ namespace DfoGmTool.ServerCore.Game.Inventory
             var stackableType = metadata.StackableType.Replace("`", "").Trim();
             return stackableType.StartsWith("[creature]", StringComparison.OrdinalIgnoreCase)
                 || stackableType.StartsWith("[feed]", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static byte ResolveEquipmentItemKind(ItemMetadata metadata)
+        {
+            if (IsAvatarItem(metadata))
+                return ItemCore.KindAvatar;
+
+            var equipmentType = NormalizePvfKindTag(metadata.EquipmentType);
+            if (equipmentType == "creature")
+                return ItemCore.KindCreature;
+
+            if (equipmentType == "artifact red"
+                || equipmentType == "artifact blue"
+                || equipmentType == "artifact green")
+                return ItemCore.KindCreatureEquipment;
+
+            return ItemCore.KindEquipment;
+        }
+
+        private static byte ResolveStackableItemKind(int itemTemplateId, ItemMetadata metadata)
+        {
+            if (IsPetConsumableItem(metadata))
+                return ItemCore.KindCreatureConsumable;
+
+            var stackableType = NormalizePvfKindTag(metadata.StackableType);
+            if (stackableType == "avatar emblem")
+                return ItemCore.KindAvatarEmblem;
+
+            if (stackableType == "material expert job")
+                return ItemCore.KindExpertJobMaterial;
+
+            if (stackableType == "quest")
+                return ItemCore.KindQuest;
+
+            if (stackableType == "material")
+                return IsSpecialMaterialItem(itemTemplateId)
+                    ? ItemCore.KindSpecialMaterial
+                    : ItemCore.KindMaterial;
+
+            return ItemCore.KindConsumable;
+        }
+
+        private static bool IsSpecialMaterialItem(int itemTemplateId)
+        {
+            return itemTemplateId == 3033
+                || itemTemplateId == 3034
+                || itemTemplateId == 3035
+                || itemTemplateId == 3036
+                || itemTemplateId == 3037
+                || itemTemplateId == 3262;
+        }
+
+        private static string NormalizePvfKindTag(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return string.Empty;
+
+            var normalized = value.Replace("`", string.Empty).Trim();
+            if (normalized.Length >= 2 && normalized[0] == '[')
+            {
+                var end = normalized.IndexOf(']', 1);
+                if (end > 1)
+                    normalized = normalized.Substring(1, end - 1);
+            }
+
+            return normalized.Trim().ToLowerInvariant();
         }
     }
 }
