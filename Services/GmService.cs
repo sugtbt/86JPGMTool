@@ -6,6 +6,7 @@ using DfoGmTool.ServerCore.Game.Characters;
 using DfoGmTool.ServerCore.Game.Currency;
 using DfoGmTool.ServerCore.Game.Dungeon;
 using DfoGmTool.ServerCore.Game.Inventory;
+using DfoGmTool.ServerCore.Game.Mailbox;
 using DfoGmTool.ServerCore.Game.Quests;
 using Microsoft.Data.Sqlite;
 
@@ -29,6 +30,7 @@ namespace DfoGmTool.Services
         private readonly SupplementalItemExpirationService _supplementalItemExpiration;
         private readonly Lazy<TitleBookMutationService> _titleBookMutation;
         private readonly AccountProgressService _accountProgress;
+        private readonly MailboxRepository _mailboxRepository;
 
         internal static void ResetPvfStaticData()
         {
@@ -44,6 +46,8 @@ namespace DfoGmTool.Services
             _titleBookMutation = new Lazy<TitleBookMutationService>(
                 () => new TitleBookMutationService(config.ConnectionString));
             _accountProgress = new AccountProgressService(config.DatabasePath, config.SchemaPath, config.PvfPath);
+            // 单次构造: ctor 内含 schema/迁移 bootstrap, 每次发放都 new 会全链路重跑
+            _mailboxRepository = new MailboxRepository(config.DatabasePath, config.SchemaPath);
         }
 
         // 最终职业名(觉醒>转职>基础), PVF 索引没就绪时回退基础职业表

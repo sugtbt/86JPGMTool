@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using DfoGmTool.ServerCore.Game.Currency;
 using DfoGmTool.ServerCore.Game.Inventory;
+using DfoGmTool.ServerCore.Game.Mailbox;
 using DfoGmTool.ServerCore.Game.ReviveCoin;
 using Microsoft.Data.Sqlite;
 
@@ -288,7 +289,14 @@ namespace DfoGmTool.Services
             return "其他";
         }
 
-        public object GiveItem(int characterId, int itemTemplateId, int count, PvfIndexService pvfIndex)
+        // GM 系统邮件发件人固定 ID(正数即可, sender 无 FK; 收件箱显示发件人名 "GM")
+        private const int GmMailSenderCharacterId = 1999999999;
+
+        // 默认经游戏内邮件发放: 物品走服务端 SendSystemMail 落邮件表,
+        // 领取由服务端自身 handler 完成——在线角色也能安全收, 不再直写背包
+        // (在线角色的背包真源在服务端内存, 直改 DB 会被内存态覆盖)。
+        // direct=true 退居旧的直写背包路径, 仅用于离线角色维护。
+        public object GiveItem(int characterId, int itemTemplateId, int count, PvfIndexService pvfIndex, bool direct = false)
         {
             if (itemTemplateId <= 0)
                 return Error("itemTemplateId 无效");
@@ -335,6 +343,79 @@ namespace DfoGmTool.Services
                 return new { success = true, characterId, itemTemplateId, name, count, slot = (int)ReviveCoinService.WalletSlot };
             }
 
+            if (direct)
+                return GiveItemDirect(characterId, accountId, itemTemplateId, count, name);
+
+            return GiveItemViaMail(characterId, accountId, itemTemplateId, count, name);
+        }
+
+        private object GiveItemViaMail(int characterId, int accountId, int itemTemplateId, int count, string name)
+        {
+            string receiverName = null;
+            int receiverLevel = 0;
+            using (var conn = new SqliteConnection(_config.ConnectionString))
+            {
+                conn.Open();
+                using (var cmd = conn.CreateCommand())
+                {
+                    cmd.CommandText = "SELECT name, level FROM characters WHERE character_id = @cid AND delete_flag = 0;";
+                    cmd.Parameters.AddWithValue("@cid", characterId);
+                    using (var reader = cmd.ExecuteReader())
+                    {
+                        if (!reader.Read())
+                            return Error("角色不存在或已删除: " + characterId);
+                        receiverName = reader.GetString(0);
+                        receiverLevel = reader.GetInt32(1);
+                    }
+                }
+            }
+
+            var request = new MailboxSendRequest
+            {
+                SenderCharacterId = GmMailSenderCharacterId,
+                SenderAccountId = 0,
+                SenderName = "GM",
+                SenderLevel = 86,
+                ReceiverCharacterId = characterId,
+                ReceiverAccountId = accountId,
+                ReceiverName = receiverName ?? string.Empty,
+                ReceiverLevel = receiverLevel,
+                Gold = 0,
+                Text = "GM 发放",
+                MailType = 1,
+                SourceProtocol = 0,
+                Unlimited = true,
+                IdempotencyKey = "gm:" + Guid.NewGuid().ToString("N"),
+                AuditActor = "DfoGmTool",
+                AuditReason = "GM 发放",
+                Attachments = new[]
+                {
+                    new MailboxSendAttachmentRequest
+                    {
+                        ItemId = itemTemplateId,
+                        ItemCount = count,
+                    },
+                },
+            };
+
+            var result = _mailboxRepository.SendSystemMail(request);
+            if (!result.Success)
+                return Error("邮件发放失败: " + MailErrorText(result.Error));
+
+            return new
+            {
+                success = true,
+                characterId,
+                itemTemplateId,
+                name,
+                count,
+                viaMail = true,
+                messageId = result.MessageId,
+            };
+        }
+
+        private object GiveItemDirect(int characterId, int accountId, int itemTemplateId, int count, string name)
+        {
             var grant = CharacterItemGrantService.TryGrant(
                 _config.ConnectionString, characterId, accountId, itemTemplateId, count);
             if (!grant.Success)
@@ -351,6 +432,22 @@ namespace DfoGmTool.Services
                 expireTime = grant.ExpireTime,
                 slots = grant.AffectedSlots,
             };
+        }
+
+        private static string MailErrorText(MailboxSendError error)
+        {
+            switch (error)
+            {
+                case MailboxSendError.None: return "未知错误";
+                case MailboxSendError.InvalidRequest: return "请求无效";
+                case MailboxSendError.ReceiverNotFound: return "收件角色不存在";
+                case MailboxSendError.ReceiverDeleted: return "收件角色已删除";
+                case MailboxSendError.InvalidAttachment: return "附件无效(物品不可邮或创建失败)";
+                case MailboxSendError.TooManyAttachments: return "附件数量超限";
+                case MailboxSendError.NotTradable: return "该物品不可交易";
+                case MailboxSendError.AccountBound: return "该物品为账号绑定";
+                default: return error.ToString();
+            }
         }
 
         public object RemoveItem(int characterId, int itemTemplateId, int count)

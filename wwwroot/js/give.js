@@ -209,7 +209,9 @@ async function giveItem(templateId, count) {
   if (!currentChar) { toast('请先选择角色', true); return; }
   try {
     const r = await post(`/api/characters/${currentChar.characterId}/items`, { templateId, count });
-    toast(`已发放 ${r.name || r.itemTemplateId} x${r.count} → 槽位 ${r.slot}`);
+    toast(r.viaMail
+      ? `已通过邮件发放 ${r.name || r.itemTemplateId} x${r.count}(邮件 #${r.messageId}, 在线角色邮箱领取)`
+      : `已发放 ${r.name || r.itemTemplateId} x${r.count} → 槽位 ${r.slot}`);
     loadItems();
   } catch (e) {
     toast(e.message, true);

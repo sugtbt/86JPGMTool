@@ -38,6 +38,8 @@ S4A12 服务端的 Web GM 控制台。独立进程运行，直接操作服务端
 - 读取走服务端在线背包模型（InventoryService.LoadFromDb，不裸读多态列的数据库表）
 
 **发放物品**
+- 默认**经游戏内邮件发放**：物品落服务端邮箱表（`MailboxRepository.SendSystemMail`，82B ItemCore 附件 + 审计 + 幂等键），玩家在游戏邮箱里领取——**在线角色也能安全收**，不再有"直改 DB 被服务端内存覆盖"的冲突
+- 请求带 `direct: true` 时退回旧的直写背包路径（仅离线角色维护用）
 - 左侧分类树（可折叠）：装备按部位、宠物、装扮、消耗品/材料按背包同款六段（镜像服务端入格逻辑）
 - 筛选：关键词 / ID + 等级区间 + 品质。品质 0-6 七档（普通/高级/稀有/神器/史诗/勇者/传说），
   另含三个数据驱动的细分档：稀有·魔法封印（`[random option]`）、稀有·传承（`[item category] legacy`）、
@@ -54,7 +56,8 @@ S4A12 服务端的 Web GM 控制台。独立进程运行，直接操作服务端
 ## 架构
 
 - **数据变更走服务端自己的业务代码**，工具不自己拼物品数据：
-  发放 → `InventoryRewardGrantService`（`GmInventoryStore` 离线加载+同事务保存），
+  发放 → `MailboxRepository.SendSystemMail`（游戏内邮件，默认）或
+  `InventoryRewardGrantService`（`GmInventoryStore` 离线加载+同事务保存，`direct:true` 时），
   删除 → `InventoryDeleteService`，货币 → `CurrencyService` / 虚拟槽仓储，
   等级 → `CharacterProgressService`，任务位图 → `QuestRepository`，称号簿 → `TitleBookMutationService`。
   仅少数简单计数列按与服务端同构的 SQL 直改（复活币/胜点覆写、附加 SP/TP、赛利亚幸运值）。
@@ -98,7 +101,7 @@ Linux 文件系统区分大小写，服务端数据目录必须是 `Data/invento
 
 ## 注意
 
-- **服务器运行中做的改动，在线角色需要返回选角再进入才会生效**（服务端内存里的会话状态不会自动刷新）。
+- **邮件发放对在线角色即时安全**（进邮箱即可领取）；但**直改数据库的其他操作**（删除/货币覆写/直写背包），在线角色需要返回选角再进入才会生效（服务端内存里的会话状态不会自动刷新）。
 - 物品/任务索引在启动后后台构建（约 15 秒），页面顶部显示状态；构建完成前发放不校验物品 ID，请稍候。
 - 强制完成任务不发任务奖励；想拿奖励用「标记可交」然后回城正常交付。
 - 清空类操作（分类清空/账号金库清空）有确认框；单件删除立即生效不可撤销，操作前想清楚。
