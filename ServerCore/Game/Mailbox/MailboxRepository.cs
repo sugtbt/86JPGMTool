@@ -878,7 +878,7 @@ LIMIT 1;";
                     core,
                     count,
                     ItemCreateReason.MailAttachment,
-                    MailboxItemDetailCodec.BuildCreateOptions(attachment.DetailJson)));
+                    BuildClaimCreateOptions(attachment, core)));
             }
 
             var capacity = LoadClaimCapacity(connection, transaction, inventory);
@@ -979,6 +979,22 @@ LIMIT 1;";
             }
 
             return true;
+        }
+
+        private static InventoryCreateOptions BuildClaimCreateOptions(
+            MailboxAttachmentEntry attachment,
+            ItemCore core)
+        {
+            var options = MailboxItemDetailCodec.BuildCreateOptions(
+                attachment != null ? attachment.DetailJson : string.Empty);
+            if (core == null || core.ExpireTime <= 0)
+                return options;
+
+            if (options == null)
+                options = new InventoryCreateOptions();
+            if (options.ExpireTime <= 0)
+                options.ExpireTime = core.ExpireTime;
+            return options;
         }
 
         internal static bool WouldExceedCarryLimit(int currentCount, int incomingCount, int carryLimit)
