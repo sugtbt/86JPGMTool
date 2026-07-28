@@ -782,7 +782,7 @@ namespace DfoGmTool.ServerCore.Game.Inventory
             if (string.IsNullOrEmpty(normalizedType))
                 return false;
             // 武器
-            if (normalizedType == "[weapon]" || normalizedType == "[support weapon]")
+            if (normalizedType == "[weapon]" || normalizedType == "[support weapon]" || normalizedType == "[charm]")
                 return true;
             // 防具
             if (normalizedType == "[coat]" || normalizedType == "[pants]"
