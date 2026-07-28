@@ -1882,7 +1882,8 @@ LIMIT 1;";
             core.SealFlag = ClampByte(request.SealFlag);
             if (request.OptionValue != 0 && core.ItemKind == ItemCore.KindAvatar)
                 core.AbilityNo = ClampUInt16(request.OptionValue);
-            core.ExpireTime = request.ExpireTime;
+            if (request.ExpireTime > 0)
+                core.ExpireTime = request.ExpireTime;
             core.Marker16 = request.Marker16;
             if (request.PetSerialOrHandle != 0 && core.ItemKind == ItemCore.KindCreature)
                 core.CreatureUid = request.PetSerialOrHandle;
