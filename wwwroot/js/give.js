@@ -128,7 +128,9 @@ async function loadGiveCategories(expectedRuntimeEpoch) {
 }
 
 const GIVE_PAGE_SIZE = 10;
+const GIVE_EQUIPMENT_MAX_COUNT = 10;
 let givePage = 0; // 从 0 计; 换筛选条件时归零
+let giveEquipmentModalState = null;
 
 async function searchItems(page) {
   givePage = page || 0;
@@ -168,15 +170,23 @@ async function searchItems(page) {
     tbody.innerHTML = '';
     for (const r of data.results) {
       const tr = document.createElement('tr');
+      const isEquipment = r.kind === 'equipment';
       tr.innerHTML = `<td>${r.itemId}</td>
         <td class="rarity-${r.rarity >= 0 && r.rarity <= 6 ? r.rarity : 0}">${escapeHtml(r.name)}</td>
         <td>${r.minLevel || ''}</td>
         <td>${r.special ? (SPECIAL_LABELS[r.special] || escapeHtml(r.special)) : (RARITY_LABELS[r.rarity] || r.rarity)}</td>
         <td title="${escapeHtml(r.tag || '')}">${escapeHtml(tagLabel(r.tag))}</td>
         <td>${templateExpirationLabel(r)}</td>
-        <td><input type="number" value="1" min="1"></td><td><button class="mini">发放</button></td>`;
-      tr.querySelector('button').onclick = () =>
+        <td>${isEquipment ? '<span class="hint">1-10</span>' : '<input type="number" value="1" min="1">'}</td>
+        <td><button class="mini">发放</button></td>`;
+      const button = tr.querySelector('button');
+      button.onclick = () => {
+        if (isEquipment) {
+          openGiveEquipmentModal(r, button);
+          return;
+        }
         giveItem(r.itemId, parseInt(tr.querySelector('input').value, 10) || 1);
+      };
       tbody.appendChild(tr);
     }
     if (data.results.length === 0)
@@ -205,13 +215,189 @@ async function searchItems(page) {
   }
 }
 
+function selectedGiveEquipmentState() {
+  return document.querySelector('input[name="give-equipment-state"]:checked')?.value || 'normal';
+}
+
+function updateGiveEquipmentFields() {
+  const modal = giveEquipmentModalState;
+  if (!modal) return;
+
+  const state = selectedGiveEquipmentState();
+  const showReinforce = modal.canUpgrade && state === 'normal';
+  const showAmplify = modal.canAmplify && state === 'amplified';
+  $('#give-equipment-reinforce-field').classList.toggle('hidden', !showReinforce);
+  $('#give-equipment-amplify-type-field').classList.toggle('hidden', !showAmplify);
+  $('#give-equipment-amplify-level-field').classList.toggle('hidden', !showAmplify || !modal.canAmplifyLevel);
+
+  if (!showReinforce) $('#give-equipment-reinforce-level').value = '0';
+  if (!showAmplify) $('#give-equipment-amplify-level').value = '0';
+}
+
+function openGiveEquipmentModal(item, opener) {
+  if (!currentChar) { toast('请先选择角色', true); return; }
+
+  const canUpgrade = item.canUpgrade === true;
+  const canAmplify = item.canAmplify === true;
+  const canAmplifyLevel = canAmplify && item.canAmplifyLevel === true;
+  const isWeapon = item.isWeapon === true;
+  giveEquipmentModalState = {
+    item,
+    canUpgrade,
+    canAmplify,
+    canAmplifyLevel,
+    isWeapon,
+    characterId: currentChar.characterId,
+    epoch: selectEpoch,
+    opener,
+    submitting: false,
+  };
+
+  $('#give-equipment-name').textContent = item.name || `物品 ${item.itemId}`;
+  $('#give-equipment-meta').textContent = `ID ${item.itemId} · ${tagLabel(item.tag)}`;
+  $('#give-equipment-upgrade-fields').classList.toggle('hidden', !canUpgrade && !canAmplify);
+  $('#give-equipment-forging-field').classList.toggle('hidden', !isWeapon);
+  for (const value of ['unpurified', 'amplified']) {
+    const input = document.querySelector(`input[name="give-equipment-state"][value="${value}"]`);
+    input.disabled = !canAmplify;
+    input.closest('label').title = canAmplify ? '' : '该装备不支持异界气息';
+  }
+  document.querySelector('input[name="give-equipment-state"][value="normal"]').checked = true;
+  $('#give-equipment-reinforce-level').value = '0';
+  $('#give-equipment-amplify-type').value = '3';
+  $('#give-equipment-amplify-level').value = '0';
+  $('#give-equipment-forging-level').value = '0';
+  $('#give-equipment-quality-mode').value = 'top';
+  $('#give-equipment-count').value = '1';
+  updateGiveEquipmentFields();
+  setGiveEquipmentSubmitting(false);
+  $('#give-equipment-panel').classList.remove('hidden');
+
+  setTimeout(() => {
+    const target = canUpgrade || canAmplify
+      ? document.querySelector('input[name="give-equipment-state"]:checked')
+      : isWeapon ? $('#give-equipment-forging-level') : $('#give-equipment-count');
+    target?.focus();
+  }, 0);
+}
+
+function setGiveEquipmentSubmitting(submitting) {
+  if (giveEquipmentModalState) giveEquipmentModalState.submitting = submitting;
+  $('#btn-submit-give-equipment').disabled = submitting;
+  $('#btn-cancel-give-equipment').disabled = submitting;
+  $('#btn-close-give-equipment').disabled = submitting;
+  $('#btn-submit-give-equipment').textContent = submitting ? '发送中…' : '发送';
+}
+
+function closeGiveEquipmentModal(force) {
+  const modal = giveEquipmentModalState;
+  if (!modal || (modal.submitting && force !== true)) return;
+
+  $('#give-equipment-panel').classList.add('hidden');
+  giveEquipmentModalState = null;
+  setGiveEquipmentSubmitting(false);
+  const fallback = $('#search-input');
+  setTimeout(() => (modal.opener && document.contains(modal.opener) ? modal.opener : fallback)?.focus(), 0);
+}
+
+function readGiveEquipmentInteger(selector, min, max, label) {
+  const input = $(selector);
+  const value = Number(input.value);
+  if (!Number.isInteger(value) || value < min || value > max) {
+    input.setCustomValidity(`${label}必须是 ${min} 到 ${max} 的整数`);
+    input.reportValidity();
+    input.focus();
+    return null;
+  }
+  input.setCustomValidity('');
+  return value;
+}
+
+function giveResultToast(r) {
+  toast(r.viaMail
+    ? `已通过邮件发放 ${r.name || r.itemTemplateId} x${r.count}(邮件 #${r.messageId}, 在线角色邮箱领取)`
+    : `已发放 ${r.name || r.itemTemplateId} x${r.count} → 槽位 ${r.slot}`);
+}
+
+async function submitGiveEquipment() {
+  const modal = giveEquipmentModalState;
+  if (!modal || modal.submitting) return;
+  if (!currentChar || currentChar.characterId !== modal.characterId || selectEpoch !== modal.epoch) {
+    toast('角色已切换，请重新选择装备后发送', true);
+    closeGiveEquipmentModal();
+    return;
+  }
+
+  const count = readGiveEquipmentInteger('#give-equipment-count', 1, GIVE_EQUIPMENT_MAX_COUNT, '发送数量');
+  if (count == null) return;
+
+  const state = modal.canUpgrade || modal.canAmplify ? selectedGiveEquipmentState() : 'normal';
+  let upgradeLevel = 0;
+  let amplifyType = 0;
+  if (modal.canUpgrade && state === 'normal') {
+    upgradeLevel = readGiveEquipmentInteger('#give-equipment-reinforce-level', 0, 31, '强化等级');
+  } else if (modal.canAmplify && state === 'amplified') {
+    amplifyType = Number($('#give-equipment-amplify-type').value);
+    if (modal.canAmplifyLevel)
+      upgradeLevel = readGiveEquipmentInteger('#give-equipment-amplify-level', 0, 31, '增幅等级');
+  }
+  if (upgradeLevel == null) return;
+
+  const forgingLevel = modal.isWeapon
+    ? readGiveEquipmentInteger('#give-equipment-forging-level', 0, 8, '锻造等级')
+    : 0;
+  if (forgingLevel == null) return;
+  const qualityMode = $('#give-equipment-quality-mode').value;
+
+  setGiveEquipmentSubmitting(true);
+  try {
+    const r = await post(`/api/characters/${modal.characterId}/items`, {
+      templateId: modal.item.itemId,
+      count,
+      equipmentOptions: { state, upgradeLevel, amplifyType, forgingLevel, qualityMode },
+    });
+    giveResultToast(r);
+    if (giveEquipmentModalState === modal) closeGiveEquipmentModal(true);
+    if (currentChar && currentChar.characterId === modal.characterId && selectEpoch === modal.epoch)
+      loadItems();
+  } catch (e) {
+    toast(e.message, true);
+    if (giveEquipmentModalState === modal) setGiveEquipmentSubmitting(false);
+  }
+}
+
+function handleGiveEquipmentModalKeydown(event) {
+  const panel = $('#give-equipment-panel');
+  if (!giveEquipmentModalState || panel.classList.contains('hidden')) return;
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    closeGiveEquipmentModal();
+    return;
+  }
+  if (event.key !== 'Tab') return;
+
+  const focusable = Array.from(panel.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled])'))
+    .filter((el) => !el.closest('.hidden'));
+  if (focusable.length === 0) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (!panel.contains(document.activeElement) || !focusable.includes(document.activeElement)) {
+    event.preventDefault();
+    (event.shiftKey ? last : first).focus();
+  } else if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
 async function giveItem(templateId, count) {
   if (!currentChar) { toast('请先选择角色', true); return; }
   try {
     const r = await post(`/api/characters/${currentChar.characterId}/items`, { templateId, count });
-    toast(r.viaMail
-      ? `已通过邮件发放 ${r.name || r.itemTemplateId} x${r.count}(邮件 #${r.messageId}, 在线角色邮箱领取)`
-      : `已发放 ${r.name || r.itemTemplateId} x${r.count} → 槽位 ${r.slot}`);
+    giveResultToast(r);
     loadItems();
   } catch (e) {
     toast(e.message, true);
