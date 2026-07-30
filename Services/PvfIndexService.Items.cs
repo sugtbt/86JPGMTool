@@ -20,6 +20,10 @@ namespace DfoGmTool.Services
             public string TypeTag;   // [weapon]/[coat]/[material]/... 的首个标签(去壳小写)
             public string Segment;   // 堆叠物的背包入格分类(与服务端 GetSlotRange 同语义), 装备为 null
             public string Special;   // 品质细分: legacy(传承)/boss(领主神器)/sealed(魔法封印), 无则 null
+            public bool CanReinforce;
+            public bool CanHaveAmplifyState;
+            public bool CanAmplifyLevel;
+            public bool IsWeapon;
             public int Rarity;
             public int MinLevel;
             public int AbsoluteExpirationUnixTime;
@@ -216,6 +220,10 @@ namespace DfoGmTool.Services
                     special = e.Special,
                     rarity = e.Rarity,
                     minLevel = e.MinLevel,
+                    canUpgrade = e.CanReinforce,
+                    canAmplify = e.CanHaveAmplifyState,
+                    canAmplifyLevel = e.CanAmplifyLevel,
+                    isWeapon = e.IsWeapon,
                     templateExpiration = new
                     {
                         known = true,
@@ -372,6 +380,12 @@ namespace DfoGmTool.Services
                         if (string.IsNullOrEmpty(model.Name))
                             return;
                         var expiration = ResolveEquipmentExpiration(model);
+                        var capabilities = EquipmentGrantPolicy.Evaluate(
+                            model.EquipmentType,
+                            model.Rarity,
+                            model.MinimumLevel,
+                            model.ImpossibleContentItems,
+                            _amplifyEquipmentMinimumLevel);
                         results[i] = new ItemEntry
                         {
                             Id = entries[i].Key,
@@ -379,6 +393,10 @@ namespace DfoGmTool.Services
                             Kind = kind,
                             TypeTag = FirstTag(model.EquipmentType),
                             Special = EquipSpecial(text),
+                            CanReinforce = capabilities.CanReinforce,
+                            CanHaveAmplifyState = capabilities.CanHaveAmplifyState,
+                            CanAmplifyLevel = capabilities.CanAmplifyLevel,
+                            IsWeapon = capabilities.IsWeapon,
                             Rarity = model.Rarity,
                             MinLevel = model.MinimumLevel,
                             AbsoluteExpirationUnixTime = expiration.AbsoluteExpirationUnixTime,

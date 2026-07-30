@@ -3,6 +3,7 @@
 let accounts = [];
 
 function resetAccountWorkspace() {
+  if (typeof closeGiveEquipmentModal === 'function') closeGiveEquipmentModal(true);
   accounts = [];
   currentChar = null;
   selectEpoch++;
@@ -308,6 +309,7 @@ async function loadCharacters(accountId, expectedRuntimeEpoch = runtimeSourceEpo
 }
 
 async function selectCharacter(id, li) {
+  if (typeof closeGiveEquipmentModal === 'function') closeGiveEquipmentModal(true);
   const epoch = ++selectEpoch;
   document.querySelectorAll('#char-list li').forEach((el) => el.classList.remove('active'));
   if (li) li.classList.add('active');

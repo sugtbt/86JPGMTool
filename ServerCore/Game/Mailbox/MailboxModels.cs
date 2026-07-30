@@ -92,6 +92,8 @@ namespace DfoGmTool.ServerCore.Game.Mailbox
         public int Marker16 { get; set; }
         public int PetSerialOrHandle { get; set; }
         public string ExtraJson { get; set; } = "{}";
+        public byte[] ItemCoreData { get; set; } = Array.Empty<byte>();
+        public string DetailJson { get; set; } = string.Empty;
     }
 
     public sealed class MailboxSendResult

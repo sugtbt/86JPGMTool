@@ -1,6 +1,7 @@
 using DfoGmTool.ServerCore.Game.Characters;
 using DfoGmTool.ServerCore.Game.Dungeon;
 using DfoGmTool.ServerCore.Game.Inventory;
+using DfoGmTool.ServerCore.Game.ItemUpgrade;
 using DfoGmTool.ServerCore.Game.SelectCharacter;
 using DfoGmTool.ServerCore.Game.Skills;
 
@@ -16,6 +17,7 @@ namespace DfoGmTool.ServerCore.GameWorld
             ExpTableProvider.ResetForPvfChange();
             InitialCharacterSkills.ResetForPvfChange();
             ItemMetadataResolver.ResetForPvfChange();
+            ItemUpgradeTableProvider.ResetForPvfChange();
             CreatureExtraResolver.ResetForPvfChange();
             RentalWeaponInventoryMapper.ResetForPvfChange();
             SkillDataProvider.ResetForPvfChange();

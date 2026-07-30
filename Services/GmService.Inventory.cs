@@ -3,8 +3,10 @@ using System.Collections.Generic;
 using System.Linq;
 using DfoGmTool.ServerCore.Game.Currency;
 using DfoGmTool.ServerCore.Game.Inventory;
+using DfoGmTool.ServerCore.Game.ItemUpgrade;
 using DfoGmTool.ServerCore.Game.Mailbox;
 using DfoGmTool.ServerCore.Game.ReviveCoin;
+using DfoGmTool.ServerCore.Infrastructure;
 using Microsoft.Data.Sqlite;
 
 namespace DfoGmTool.Services
@@ -291,12 +293,22 @@ namespace DfoGmTool.Services
 
         // GM 系统邮件发件人固定 ID(正数即可, sender 无 FK; 收件箱显示发件人名 "GM")
         private const int GmMailSenderCharacterId = 1999999999;
+        private const int MailAttachmentLimit = 10;
+        private const int EquipmentUpgradeLevelMax = 31;
+        private const int WeaponForgingLevelMax = 8;
+        private const byte UnidentifiedAmplifyFlag = 0x80;
 
         // 默认经游戏内邮件发放: 物品走服务端 SendSystemMail 落邮件表,
         // 领取由服务端自身 handler 完成——在线角色也能安全收, 不再直写背包
         // (在线角色的背包真源在服务端内存, 直改 DB 会被内存态覆盖)。
         // direct=true 退居旧的直写背包路径, 仅用于离线角色维护。
-        public object GiveItem(int characterId, int itemTemplateId, int count, PvfIndexService pvfIndex, bool direct = false)
+        public object GiveItem(
+            int characterId,
+            int itemTemplateId,
+            int count,
+            PvfIndexService pvfIndex,
+            bool direct = false,
+            EquipmentGrantOptions equipmentOptions = null)
         {
             if (itemTemplateId <= 0)
                 return Error("itemTemplateId 无效");
@@ -311,6 +323,23 @@ namespace DfoGmTool.Services
             var name = pvfIndex.ResolveItemName(itemTemplateId);
             if (name == null && pvfIndex.IsReady)
                 return Error("物品 ID " + itemTemplateId + " 在 PVF 中不存在(装备/堆叠表都没有)");
+
+            var isEquipment = string.Equals(
+                pvfIndex.ResolveItemKind(itemTemplateId),
+                "equipment",
+                StringComparison.Ordinal);
+            EquipmentMailConfiguration equipment = null;
+            if (isEquipment)
+            {
+                if (!TryResolveEquipmentMailConfiguration(itemTemplateId, equipmentOptions, out equipment, out var equipmentError))
+                    return Error(equipmentError);
+                if (!direct && count > MailAttachmentLimit)
+                    return Error("装备发送数量不能超过邮件附件上限 " + MailAttachmentLimit);
+            }
+            else if (equipmentOptions != null)
+            {
+                return Error("只有装备可以设置净化、强化、增幅或锻造属性");
+            }
 
             // 晶块是账号级货币, 走 accounts.cube_* 字段
             if (CurrencyService.IsCubeFragment(itemTemplateId))
@@ -344,12 +373,22 @@ namespace DfoGmTool.Services
             }
 
             if (direct)
+            {
+                if (equipment != null && equipment.IsCustomized)
+                    return Error("装备属性配置仅支持通过邮件发放");
                 return GiveItemDirect(characterId, accountId, itemTemplateId, count, name);
+            }
 
-            return GiveItemViaMail(characterId, accountId, itemTemplateId, count, name);
+            return GiveItemViaMail(characterId, accountId, itemTemplateId, count, name, equipment);
         }
 
-        private object GiveItemViaMail(int characterId, int accountId, int itemTemplateId, int count, string name)
+        private object GiveItemViaMail(
+            int characterId,
+            int accountId,
+            int itemTemplateId,
+            int count,
+            string name,
+            EquipmentMailConfiguration equipment)
         {
             string receiverName = null;
             int receiverLevel = 0;
@@ -370,6 +409,9 @@ namespace DfoGmTool.Services
                 }
             }
 
+            if (!TryCreateMailAttachments(itemTemplateId, count, equipment, out var attachments, out var attachmentError))
+                return Error(attachmentError);
+
             var request = new MailboxSendRequest
             {
                 SenderCharacterId = GmMailSenderCharacterId,
@@ -388,14 +430,7 @@ namespace DfoGmTool.Services
                 IdempotencyKey = "gm:" + Guid.NewGuid().ToString("N"),
                 AuditActor = "DfoGmTool",
                 AuditReason = "GM 发放",
-                Attachments = new[]
-                {
-                    new MailboxSendAttachmentRequest
-                    {
-                        ItemId = itemTemplateId,
-                        ItemCount = count,
-                    },
-                },
+                Attachments = attachments,
             };
 
             var result = _mailboxRepository.SendSystemMail(request);
@@ -411,7 +446,218 @@ namespace DfoGmTool.Services
                 count,
                 viaMail = true,
                 messageId = result.MessageId,
+                attachmentCount = attachments.Count,
             };
+        }
+
+        private static bool TryResolveEquipmentMailConfiguration(
+            int itemTemplateId,
+            EquipmentGrantOptions options,
+            out EquipmentMailConfiguration configuration,
+            out string error)
+        {
+            configuration = null;
+            error = null;
+
+            var metadata = ItemMetadataResolver.Resolve(itemTemplateId);
+            if (metadata == null || !string.Equals(metadata.ItemKind, "equipment", StringComparison.Ordinal))
+            {
+                error = "物品不是装备: " + itemTemplateId;
+                return false;
+            }
+
+            var capabilities = EquipmentGrantPolicy.Evaluate(
+                metadata.EquipmentType,
+                metadata.Rarity,
+                metadata.MinimumLevel,
+                metadata.ImpossibleContents,
+                ItemUpgradeTableProvider.GetAmplifyEquipLevelConst());
+            var state = (options?.State ?? "normal").Trim().ToLowerInvariant();
+            if (state.Length == 0)
+                state = "normal";
+
+            var upgradeLevel = options?.UpgradeLevel ?? 0;
+            var amplifyType = options?.AmplifyType ?? 0;
+            var forgingLevel = options?.ForgingLevel ?? 0;
+            var qualityMode = (options?.QualityMode ?? "top").Trim().ToLowerInvariant();
+            if (upgradeLevel < 0 || upgradeLevel > EquipmentUpgradeLevelMax)
+            {
+                error = "强化/增幅等级必须在 0-" + EquipmentUpgradeLevelMax + " 之间";
+                return false;
+            }
+            if (forgingLevel < 0 || forgingLevel > WeaponForgingLevelMax)
+            {
+                error = "锻造等级必须在 0-" + WeaponForgingLevelMax + " 之间";
+                return false;
+            }
+            if (!capabilities.IsWeapon && forgingLevel != 0)
+            {
+                error = "只有武器可以设置锻造等级";
+                return false;
+            }
+
+            int? qualitySeed;
+            switch (qualityMode)
+            {
+                case "top":
+                    qualitySeed = unchecked((int)ItemQuality.TopQualitySeed);
+                    break;
+                case "random":
+                    qualitySeed = null;
+                    break;
+                default:
+                    error = "未知装备品级模式: " + qualityMode;
+                    return false;
+            }
+
+            byte resolvedAmplifyType;
+            ushort resolvedAmplifyValue;
+            switch (state)
+            {
+                case "normal":
+                    if (amplifyType != 0)
+                    {
+                        error = "普通强化装备不能设置增幅属性";
+                        return false;
+                    }
+                    if (!capabilities.CanReinforce && upgradeLevel != 0)
+                    {
+                        error = "该装备禁止强化";
+                        return false;
+                    }
+                    resolvedAmplifyType = 0;
+                    resolvedAmplifyValue = 0;
+                    break;
+
+                case "unpurified":
+                    if (!capabilities.CanHaveAmplifyState)
+                    {
+                        error = "该装备不支持异界气息";
+                        return false;
+                    }
+                    if (upgradeLevel != 0 || amplifyType != 0)
+                    {
+                        error = "未净化装备不能设置强化、增幅等级或增幅属性";
+                        return false;
+                    }
+                    resolvedAmplifyType = UnidentifiedAmplifyFlag;
+                    resolvedAmplifyValue = 0;
+                    break;
+
+                case "purified":
+                case "amplified":
+                    if (!capabilities.CanHaveAmplifyState)
+                    {
+                        error = "该装备不支持净化或增幅";
+                        return false;
+                    }
+                    if (amplifyType < (int)AmplifyAttributeType.Vitality
+                        || amplifyType > (int)AmplifyAttributeType.Intelligence)
+                    {
+                        error = "增幅属性必须是体力、精神、力量或智力";
+                        return false;
+                    }
+                    if (!capabilities.CanAmplifyLevel && upgradeLevel != 0)
+                    {
+                        error = "该装备禁止增幅";
+                        return false;
+                    }
+                    resolvedAmplifyType = (byte)amplifyType;
+                    resolvedAmplifyValue = ItemAmplifier.CalculateInitialAttributeValue(
+                        metadata.Rarity,
+                        (AmplifyAttributeType)amplifyType);
+                    if (resolvedAmplifyValue == 0)
+                    {
+                        error = "无法从当前 PVF 计算增幅属性初始值";
+                        return false;
+                    }
+                    state = "amplified";
+                    break;
+
+                default:
+                    error = "未知装备状态: " + state;
+                    return false;
+            }
+
+            configuration = new EquipmentMailConfiguration
+            {
+                UpgradeLevel = (byte)upgradeLevel,
+                AmplifyType = resolvedAmplifyType,
+                AmplifyValue = resolvedAmplifyValue,
+                ForgingLevel = (byte)forgingLevel,
+                QualitySeed = qualitySeed,
+                IsCustomized = state != "normal"
+                    || upgradeLevel != 0
+                    || forgingLevel != 0
+                    || (options != null && qualitySeed.HasValue),
+            };
+            return true;
+        }
+
+        private static bool TryCreateMailAttachments(
+            int itemTemplateId,
+            int count,
+            EquipmentMailConfiguration equipment,
+            out IReadOnlyList<MailboxSendAttachmentRequest> attachments,
+            out string error)
+        {
+            error = null;
+            if (equipment == null)
+            {
+                attachments = new[]
+                {
+                    new MailboxSendAttachmentRequest
+                    {
+                        ItemId = itemTemplateId,
+                        ItemCount = count,
+                    },
+                };
+                return true;
+            }
+
+            var equipmentAttachments = new List<MailboxSendAttachmentRequest>(count);
+            for (var i = 0; i < count; i++)
+            {
+                if (!InventoryRewardGrantService.TryCreateOnly(
+                        itemTemplateId,
+                        ItemCreateReason.MailAttachment,
+                        1,
+                        out var createResult)
+                    || createResult.Kind != InventoryRewardGrantKind.InventoryItem
+                    || createResult.Core == null)
+                {
+                    attachments = Array.Empty<MailboxSendAttachmentRequest>();
+                    error = "装备附件创建失败: " + itemTemplateId;
+                    return false;
+                }
+
+                var core = createResult.Core;
+                core.Upgrade = equipment.UpgradeLevel;
+                core.AmplifyType = equipment.AmplifyType;
+                core.AmplifyValue = equipment.AmplifyValue;
+                core.GenuineUpgrade = equipment.ForgingLevel;
+                core.InstanceValue = equipment.QualitySeed
+                    ?? ServerRandom.Next(1, unchecked((int)ItemQuality.TopQualitySeed));
+                equipmentAttachments.Add(new MailboxSendAttachmentRequest
+                {
+                    ItemId = itemTemplateId,
+                    ItemCount = 1,
+                    ItemCoreData = core.ToBytes(),
+                });
+            }
+
+            attachments = equipmentAttachments;
+            return true;
+        }
+
+        private sealed class EquipmentMailConfiguration
+        {
+            public byte UpgradeLevel { get; set; }
+            public byte AmplifyType { get; set; }
+            public ushort AmplifyValue { get; set; }
+            public byte ForgingLevel { get; set; }
+            public int? QualitySeed { get; set; }
+            public bool IsCustomized { get; set; }
         }
 
         private object GiveItemDirect(int characterId, int accountId, int itemTemplateId, int count, string name)
