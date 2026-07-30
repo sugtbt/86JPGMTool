@@ -31,6 +31,7 @@ namespace DfoGmTool.Services
         private volatile HashSet<string> _openHubKeys;
         private volatile Dictionary<int, JobNameInfo> _jobNames;
         private volatile List<ItemEntry> _searchList;
+        private volatile int _amplifyEquipmentMinimumLevel = 55;
         private volatile string _buildError;
         // 构建期间解析失败(被跳过)的条目数。数据源可热切换，计数必须归属当前索引实例。
         private int _parseFailures;
@@ -73,6 +74,9 @@ namespace DfoGmTool.Services
                 _dungeonRegion = BuildDungeonRegionMap(archive);
                 _mapDungeon = BuildMapDungeonMap(archive);
                 _openHubKeys = BuildOpenHubKeys(archive);
+                var amplifyConfig = archive.GetFileContent("etc/amplifyitem.etc");
+                if (!string.IsNullOrWhiteSpace(amplifyConfig))
+                    _amplifyEquipmentMinimumLevel = Math.Max(0, AmplifyItemFile.Parse(amplifyConfig).EquipLevelConst);
                 BuildKind(archive, "equipment/equipment.lst", "equipment", itemNames, searchList);
                 BuildKind(archive, "stackable/stackable.lst", "stackable", itemNames, searchList);
                 _questMeta = BuildQuestMeta(archive);

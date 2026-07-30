@@ -7,14 +7,36 @@ namespace DfoGmTool.ServerCore.Game.ItemUpgrade
 {
     public static class ItemUpgradeTableProvider
     {
-        private static readonly Lazy<UpgradeTableFile> ReinforcementTableFile =
-            new Lazy<UpgradeTableFile>(() => UpgradeTableFile.Parse(PvfArchiveAccessor.ReadText("etc/upgrade.etc")));
+        private static Lazy<UpgradeTableFile> ReinforcementTableFile = CreateReinforcementTable();
 
-        private static readonly Lazy<UpgradeTableFile> AmplifyTableFile =
-            new Lazy<UpgradeTableFile>(() => UpgradeTableFile.Parse(PvfArchiveAccessor.ReadText("etc/amplifyupgrade.etc")));
+        private static Lazy<UpgradeTableFile> AmplifyTableFile = CreateAmplifyTable();
 
-        private static readonly Lazy<AmplifyItemFile> AmplifyItemConfig =
-            new Lazy<AmplifyItemFile>(() => AmplifyItemFile.Parse(PvfArchiveAccessor.ReadText("etc/amplifyitem.etc")));
+        private static Lazy<AmplifyItemFile> AmplifyItemConfig = CreateAmplifyItemConfig();
+
+        internal static void ResetForPvfChange()
+        {
+            ReinforcementTableFile = CreateReinforcementTable();
+            AmplifyTableFile = CreateAmplifyTable();
+            AmplifyItemConfig = CreateAmplifyItemConfig();
+        }
+
+        private static Lazy<UpgradeTableFile> CreateReinforcementTable()
+        {
+            return new Lazy<UpgradeTableFile>(
+                () => UpgradeTableFile.Parse(PvfArchiveAccessor.ReadText("etc/upgrade.etc")));
+        }
+
+        private static Lazy<UpgradeTableFile> CreateAmplifyTable()
+        {
+            return new Lazy<UpgradeTableFile>(
+                () => UpgradeTableFile.Parse(PvfArchiveAccessor.ReadText("etc/amplifyupgrade.etc")));
+        }
+
+        private static Lazy<AmplifyItemFile> CreateAmplifyItemConfig()
+        {
+            return new Lazy<AmplifyItemFile>(
+                () => AmplifyItemFile.Parse(PvfArchiveAccessor.ReadText("etc/amplifyitem.etc")));
+        }
 
         public static UpgradeTableFile GetFile(ItemUpgradeTableKind kind)
         {

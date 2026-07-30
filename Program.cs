@@ -163,7 +163,13 @@ namespace DfoGmTool
             app.MapGet("/api/characters/{id:int}/sptp", (int id) => WithRuntime((gm, _) => gm.GetSpTp(id)));
 
             app.MapPost("/api/characters/{id:int}/items", (int id, ItemRequest body) =>
-                WithRuntime((gm, pvfIndex) => gm.GiveItem(id, body.TemplateId, body.Count, pvfIndex, body.Direct)));
+                WithRuntime((gm, pvfIndex) => gm.GiveItem(
+                    id,
+                    body.TemplateId,
+                    body.Count,
+                    pvfIndex,
+                    body.Direct,
+                    body.EquipmentOptions)));
             app.MapPost("/api/characters/{id:int}/items/remove", (int id, ItemRequest body) =>
                 WithRuntime((gm, _) => gm.RemoveItem(id, body.TemplateId, body.Count)));
             app.MapPost("/api/characters/{id:int}/items/delete-at", (int id, DeleteAtRequest body) =>
@@ -266,6 +272,7 @@ namespace DfoGmTool
         public int TemplateId { get; set; }
         public int Count { get; set; }
         public bool Direct { get; set; }
+        public Services.EquipmentGrantOptions EquipmentOptions { get; set; }
     }
 
     public sealed class AmountRequest

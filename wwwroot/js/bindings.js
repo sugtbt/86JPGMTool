@@ -5,6 +5,19 @@
 if (window.DfoTheme) window.DfoTheme.bind();
 bindRuntimeEnvironment();
 
+$('#give-equipment-form').onsubmit = (event) => {
+  event.preventDefault();
+  submitGiveEquipment();
+};
+$('#btn-cancel-give-equipment').onclick = () => closeGiveEquipmentModal();
+$('#btn-close-give-equipment').onclick = () => closeGiveEquipmentModal();
+$('#give-equipment-state').onchange = updateGiveEquipmentFields;
+for (const sel of ['#give-equipment-count', '#give-equipment-reinforce-level',
+  '#give-equipment-amplify-level', '#give-equipment-forging-level']) {
+  $(sel).addEventListener('input', () => $(sel).setCustomValidity(''));
+}
+document.addEventListener('keydown', handleGiveEquipmentModalKeydown);
+
 document.querySelectorAll('.tab[data-tab]').forEach((tab) => {
   tab.onclick = () => {
     document.querySelectorAll('.tab[data-tab]').forEach((t) => t.classList.remove('active'));

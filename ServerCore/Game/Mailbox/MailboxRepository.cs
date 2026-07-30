@@ -1876,6 +1876,9 @@ LIMIT 1;";
             snapshot = null;
             var metadata = ItemMetadataResolver.Resolve(request.ItemId);
             var itemCount = Math.Max(1, request.ItemCount);
+            if (request.ItemCoreData != null && request.ItemCoreData.Length > 0)
+                return TryCreateExplicitSystemAttachmentSnapshot(ordinal, request, metadata, itemCount, out snapshot);
+
             if (!InventoryRewardGrantService.TryCreateOnly(
                 request.ItemId,
                 ItemCreateReason.MailAttachment,
@@ -1932,7 +1935,62 @@ LIMIT 1;";
                 Marker16 = core.Marker16,
                 PetSerialOrHandle = core.CreatureUid,
                 ExtraJson = string.IsNullOrWhiteSpace(request.ExtraJson) ? "{}" : request.ExtraJson,
-                ItemCoreData = MailboxItemCoreCodec.Encode(core)
+                ItemCoreData = MailboxItemCoreCodec.Encode(core),
+                DetailJson = request.DetailJson ?? string.Empty
+            };
+            return true;
+        }
+
+        private static bool TryCreateExplicitSystemAttachmentSnapshot(
+            int ordinal,
+            MailboxSendAttachmentRequest request,
+            ItemMetadata metadata,
+            int itemCount,
+            out MailboxAttachmentSnapshot snapshot)
+        {
+            snapshot = null;
+            if (request?.ItemCoreData == null || request.ItemCoreData.Length != ItemCore.Size)
+                return false;
+
+            var core = ItemCore.FromBytes(request.ItemCoreData);
+            if (core == null || core.ItemId <= 0 || core.ItemId != request.ItemId)
+                return false;
+
+            core = core.Copy();
+            if (InventoryStackRuleService.IsStackable(core))
+                core.Count = itemCount;
+            else
+                itemCount = 1;
+
+            core.SortLockFlag = 0;
+            core.EquipmentLockId = 0;
+            if (core.ItemKind == ItemCore.KindAvatar)
+                core.AvatarUid = 0;
+            else if (core.ItemKind == ItemCore.KindCreature)
+                core.CreatureUid = 0;
+
+            var sourceListType = ResolveMailboxAttachmentListType(request.ItemType, core.ItemId, metadata);
+            snapshot = new MailboxAttachmentSnapshot
+            {
+                Ordinal = ordinal,
+                ItemType = request.ItemType,
+                SourceListType = sourceListType,
+                SourceSlotIndex = request.ItemSlot,
+                SourceItemUid = 0,
+                ItemTemplateId = core.ItemId,
+                ItemKind = MailboxItemCoreCodec.GetLegacyKindName(core),
+                ItemCount = itemCount,
+                InstanceValue = core.Value,
+                Durability = core.Durability,
+                SealFlag = core.SealFlag,
+                OptionValue = core.AbilityNo,
+                EquipmentLockId = 0,
+                ExpireTime = core.ExpireTime,
+                Marker16 = core.Marker16,
+                PetSerialOrHandle = core.CreatureUid,
+                ExtraJson = string.IsNullOrWhiteSpace(request.ExtraJson) ? "{}" : request.ExtraJson,
+                ItemCoreData = MailboxItemCoreCodec.Encode(core),
+                DetailJson = request.DetailJson ?? string.Empty
             };
             return true;
         }
@@ -2145,6 +2203,14 @@ LIMIT 1;";
                 AppendHashField(builder, attachment.Marker16.ToString());
                 AppendHashField(builder, attachment.PetSerialOrHandle.ToString());
                 AppendHashField(builder, attachment.ExtraJson);
+                if ((attachment.ItemCoreData != null && attachment.ItemCoreData.Length > 0)
+                    || !string.IsNullOrEmpty(attachment.DetailJson))
+                {
+                    AppendHashField(builder, attachment.ItemCoreData != null && attachment.ItemCoreData.Length > 0
+                        ? Convert.ToHexString(attachment.ItemCoreData)
+                        : string.Empty);
+                    AppendHashField(builder, attachment.DetailJson);
+                }
             }
 
             return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString())));

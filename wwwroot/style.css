@@ -319,6 +319,7 @@ header h1::before {
 }
 
 .runtime-source-panel,
+.give-equipment-panel,
 .login-panel {
   position: fixed;
   z-index: 20;
@@ -334,6 +335,7 @@ header h1::before {
 .login-panel { z-index: 30; }
 
 .runtime-source-dialog,
+.give-equipment-dialog,
 .login-dialog {
   width: min(620px, 100%);
   padding: 16px;
@@ -344,8 +346,15 @@ header h1::before {
 }
 
 .login-dialog { width: min(400px, 100%); }
+.give-equipment-dialog {
+  width: min(520px, 100%);
+  max-height: calc(100vh - 96px);
+  overflow-y: auto;
+}
 
 .runtime-source-title-row,
+.give-equipment-title-row,
+.give-equipment-actions,
 .runtime-source-actions {
   display: flex;
   align-items: center;
@@ -357,7 +366,13 @@ header h1::before {
   margin-bottom: 14px;
 }
 
+.give-equipment-title-row {
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
 .runtime-source-title-row h2,
+.give-equipment-title-row h2,
 .login-dialog h2 {
   margin: 0;
   color: var(--title);
@@ -384,6 +399,117 @@ header h1::before {
 .runtime-source-actions,
 .login-actions {
   min-height: 32px;
+}
+
+.modal-close {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  padding: 0;
+  background: var(--button-secondary);
+  color: var(--text);
+  font-size: 22px;
+  line-height: 1;
+}
+
+.modal-close:hover { background: var(--button-secondary-hover); }
+
+.give-equipment-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  overflow-wrap: anywhere;
+}
+
+.give-equipment-section {
+  min-width: 0;
+  margin: 0 0 16px;
+  padding: 0;
+  border: 0;
+}
+
+.give-equipment-section legend {
+  margin-bottom: 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.segmented-control {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-bottom: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.segmented-control label {
+  position: relative;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.segmented-control label + label { border-left: 1px solid var(--border); }
+
+.segmented-control input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.segmented-control span {
+  display: flex;
+  min-height: 36px;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+.segmented-control input:checked + span {
+  background: var(--surface-selected);
+  color: var(--accent);
+}
+
+.segmented-control input:disabled + span {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+.segmented-control input:focus-visible + span {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+.give-equipment-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.give-equipment-field {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.give-equipment-field input,
+.give-equipment-field select {
+  width: 100%;
+  min-width: 0;
+}
+
+.give-equipment-actions {
+  justify-content: flex-end;
+  margin-top: 18px;
 }
 
 .login-actions {
@@ -864,7 +990,7 @@ table .hint { font-size: inherit; }
   position: fixed;
   right: 24px;
   bottom: 24px;
-  z-index: 10;
+  z-index: 40;
   padding: 10px 18px;
   border-radius: 6px;
   background: var(--toast-bg);
@@ -939,15 +1065,32 @@ button,
   }
 
   .runtime-source-panel,
+  .give-equipment-panel,
   .login-panel {
     padding-top: 64px;
   }
 
   .runtime-source-actions,
+  .give-equipment-actions,
   .login-actions {
     align-items: flex-start;
     flex-wrap: wrap;
   }
+
+  .give-equipment-panel { padding-top: 24px; }
+
+  .give-equipment-dialog { max-height: calc(100vh - 48px); }
+
+  .give-equipment-fields { grid-template-columns: minmax(0, 1fr); }
+
+  .segmented-control { grid-template-columns: minmax(0, 1fr); }
+
+  .segmented-control label + label {
+    border-top: 1px solid var(--border);
+    border-left: 0;
+  }
+
+  .give-equipment-actions button { flex: 1 1 120px; }
 
   .tabs {
     overflow-x: auto;

@@ -364,6 +364,67 @@
     </section>
   </main>
 
+  <section id="give-equipment-panel" class="give-equipment-panel hidden" role="dialog" aria-modal="true"
+    aria-labelledby="give-equipment-title" aria-describedby="give-equipment-summary">
+    <form id="give-equipment-form" class="give-equipment-dialog">
+      <div class="give-equipment-title-row">
+        <h2 id="give-equipment-title">发放装备</h2>
+        <button id="btn-close-give-equipment" class="modal-close" type="button" aria-label="关闭" title="关闭">&times;</button>
+      </div>
+
+      <div id="give-equipment-summary" class="give-equipment-summary">
+        <strong id="give-equipment-name"></strong>
+        <span id="give-equipment-meta" class="hint"></span>
+      </div>
+
+      <fieldset id="give-equipment-upgrade-fields" class="give-equipment-section">
+        <legend>装备状态</legend>
+        <div id="give-equipment-state" class="segmented-control">
+          <label><input type="radio" name="give-equipment-state" value="normal" checked><span>普通强化</span></label>
+          <label><input type="radio" name="give-equipment-state" value="unpurified"><span>未净化</span></label>
+          <label><input type="radio" name="give-equipment-state" value="amplified"><span>已净化增幅</span></label>
+        </div>
+
+        <div class="give-equipment-fields">
+          <label id="give-equipment-reinforce-field" class="give-equipment-field">强化等级
+            <input id="give-equipment-reinforce-level" type="number" min="0" max="31" step="1" value="0" required>
+          </label>
+          <label id="give-equipment-amplify-type-field" class="give-equipment-field hidden">增幅属性
+            <select id="give-equipment-amplify-type">
+              <option value="1">体力</option>
+              <option value="2">精神</option>
+              <option value="3">力量</option>
+              <option value="4">智力</option>
+            </select>
+          </label>
+          <label id="give-equipment-amplify-level-field" class="give-equipment-field hidden">增幅等级
+            <input id="give-equipment-amplify-level" type="number" min="0" max="31" step="1" value="0" required>
+          </label>
+        </div>
+      </fieldset>
+
+      <div class="give-equipment-fields">
+        <label class="give-equipment-field">品级
+          <select id="give-equipment-quality-mode">
+            <option value="top" selected>最上级</option>
+            <option value="random">随机品级</option>
+          </select>
+        </label>
+        <label id="give-equipment-forging-field" class="give-equipment-field hidden">锻造等级
+          <input id="give-equipment-forging-level" type="number" min="0" max="8" step="1" value="0" required>
+        </label>
+        <label class="give-equipment-field">发送数量
+          <input id="give-equipment-count" type="number" min="1" max="10" step="1" value="1" required>
+        </label>
+      </div>
+
+      <div class="give-equipment-actions">
+        <button id="btn-cancel-give-equipment" class="mini" type="button">取消</button>
+        <button id="btn-submit-give-equipment" type="submit">发送</button>
+      </div>
+    </form>
+  </section>
+
   <div id="toast" class="toast hidden"></div>
   <!-- 顺序即依赖: core 提供通用助手, bindings 必须最后(全部事件绑定与启动调用) -->
   <script src="js/core.js"></script>
