@@ -1,13 +1,10 @@
 name: Sync Upstream and Build Release
 
 on:
-  # 允许手动触发
   workflow_dispatch:
-  # 每天定时检查更新 (可根据需要调整 cron 表达式)
   schedule:
     - cron: '0 0 * * *'
 
-# 确保 Action 拥有写入权限以推送合并后的代码和创建 Release
 permissions:
   contents: write
 
@@ -19,7 +16,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # 必须获取完整历史记录以便进行 merge
+          fetch-depth: 0 
           
       - name: Sync upstream via Merge
         id: sync
@@ -27,11 +24,9 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           
-          # 添加上游仓库
           git remote add upstream https://gitgud.io/rewio/86JPGMTool.git || true
           git fetch upstream
           
-          # 自动检测上游默认分支 (main 或 master)
           UPSTREAM_BRANCH=$(git symbolic-ref refs/remotes/upstream/HEAD 2>/dev/null | sed 's@^refs/remotes/upstream/@@' || echo "")
           if [ -z "$UPSTREAM_BRANCH" ]; then
             if git show-ref --verify --quiet refs/remotes/upstream/main; then
@@ -44,12 +39,10 @@ jobs:
           echo "Merging from upstream/$UPSTREAM_BRANCH"
           BEFORE_COMMIT=$(git rev-parse HEAD)
           
-          # 执行 merge，--allow-unrelated-histories 防止首次合并时报错
           git merge "upstream/$UPSTREAM_BRANCH" --no-edit --allow-unrelated-histories || echo "Merge completed or already up to date."
           
           AFTER_COMMIT=$(git rev-parse HEAD)
           
-          # 判断是否有新提交
           if [ "$BEFORE_COMMIT" != "$AFTER_COMMIT" ]; then
             echo "Updates found. Pushing merge commit..."
             git push origin HEAD:${{ github.ref }}
@@ -57,6 +50,11 @@ jobs:
           else
             echo "No updates from upstream."
             echo "HAS_UPDATE=false" >> $GITHUB_ENV
+          fi
+
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "Manual trigger detected. Forcing build and release."
+            echo "HAS_UPDATE=true" >> $GITHUB_ENV
           fi
 
       - name: Setup .NET 10.0
@@ -80,14 +78,11 @@ jobs:
       - name: Package with wwwroot
         if: env.HAS_UPDATE == 'true'
         run: |
-          # dotnet publish 通常会自动将 wwwroot 复制到输出目录
-          # 此处增加兜底逻辑：如果输出目录缺少 wwwroot，则从源码目录手动复制
           if [ -d "./wwwroot" ] && [ ! -d "./publish_output/wwwroot" ]; then
             echo "Copying wwwroot to publish output..."
             cp -r ./wwwroot ./publish_output/
           fi
           
-          # 打包发布目录
           cd publish_output
           zip -r ../86JPGMTool-Release.zip .
 
