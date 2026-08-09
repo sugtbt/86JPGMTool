@@ -71,14 +71,18 @@ jobs:
         if: env.HAS_UPDATE == 'true'
         run: dotnet build --no-restore --configuration Release
 
-      - name: Publish Project
+      - name: Publish Project (Optimized)
         if: env.HAS_UPDATE == 'true'
-        # 添加 -r win-x64 指定只打包 Windows 64位依赖，--self-contained false 保持不打包 .NET 运行时本体
-        run: dotnet publish -c Release -r win-x64 --self-contained false -o ./publish_output
+        run: |
+          dotnet publish -c Release -r win-x64 --self-contained false \
+            -p:PublishReadyToRun=true \
+            -p:DebugType=none \
+            -o ./publish_output
 
       - name: Package with wwwroot
         if: env.HAS_UPDATE == 'true'
         run: |
+          # 兜底检查：确保 wwwroot 被正确复制到发布目录
           if [ -d "./wwwroot" ] && [ ! -d "./publish_output/wwwroot" ]; then
             echo "Copying wwwroot to publish output..."
             cp -r ./wwwroot ./publish_output/
