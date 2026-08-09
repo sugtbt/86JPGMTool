@@ -73,7 +73,8 @@ jobs:
 
       - name: Publish Project
         if: env.HAS_UPDATE == 'true'
-        run: dotnet publish -c Release -o ./publish_output
+        # 添加 -r win-x64 指定只打包 Windows 64位依赖，--self-contained false 保持不打包 .NET 运行时本体
+        run: dotnet publish -c Release -r win-x64 --self-contained false -o ./publish_output
 
       - name: Package with wwwroot
         if: env.HAS_UPDATE == 'true'
